@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Test/coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Config (may contain credentials)
+# ~/.config/proxy-relay/config.toml is outside repo
