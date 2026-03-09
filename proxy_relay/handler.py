@@ -12,6 +12,7 @@ import time
 from proxy_relay.exceptions import TunnelError
 from proxy_relay.forwarder import forward_http_request
 from proxy_relay.logger import get_logger
+from proxy_relay.monitor import ConnectionMonitor, ConnectionOutcome
 from proxy_relay.tunnel import open_tunnel, relay_data
 from proxy_relay.upstream import UpstreamInfo
 
@@ -28,6 +29,7 @@ async def handle_connection(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
     upstream: UpstreamInfo,
+    monitor: ConnectionMonitor | None = None,
 ) -> None:
     """Handle a single client connection to the proxy.
 
@@ -38,6 +40,7 @@ async def handle_connection(
         client_reader: Reader from the connected client.
         client_writer: Writer to the connected client.
         upstream: Upstream SOCKS5 connection parameters.
+        monitor: Optional connection quality monitor for recording outcomes.
     """
     peer = client_writer.get_extra_info("peername")
     peer_str = f"{peer[0]}:{peer[1]}" if peer else "unknown"
@@ -58,6 +61,7 @@ async def handle_connection(
                 upstream,
                 client_reader,
                 client_writer,
+                monitor=monitor,
             )
         else:
             await _handle_http(
@@ -73,14 +77,26 @@ async def handle_connection(
 
     except asyncio.TimeoutError:
         log.warning("Request timeout from %s", peer_str)
+        if monitor is not None:
+            await monitor.record_error(ConnectionOutcome.TIMEOUT, peer_str, "request timeout")
         await _send_error(client_writer, 408, "Request Timeout")
     except TunnelError as exc:
         log.warning("Tunnel error for %s: %s", peer_str, exc)
+        if monitor is not None:
+            await monitor.record_error(
+                ConnectionOutcome.TUNNEL_ERROR, peer_str, str(exc),
+            )
         await _send_error(client_writer, 502, "Bad Gateway")
     except (ConnectionResetError, BrokenPipeError, OSError) as exc:
         log.debug("Connection error from %s: %s", peer_str, exc)
+        if monitor is not None:
+            await monitor.record_error(ConnectionOutcome.RESET, peer_str, str(exc))
     except Exception as exc:
         log.error("Unexpected error from %s: %s", peer_str, exc, exc_info=True)
+        if monitor is not None:
+            await monitor.record_error(
+                ConnectionOutcome.TUNNEL_ERROR, peer_str, str(exc),
+            )
         await _send_error(client_writer, 500, "Internal Server Error")
     finally:
         elapsed_ms = (time.monotonic() - start) * 1000
@@ -159,6 +175,8 @@ async def _handle_connect(
     upstream: UpstreamInfo,
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
+    *,
+    monitor: ConnectionMonitor | None = None,
 ) -> None:
     """Handle a CONNECT tunnel request.
 
@@ -170,6 +188,7 @@ async def _handle_connect(
         upstream: Upstream SOCKS5 connection parameters.
         client_reader: Client stream reader.
         client_writer: Client stream writer.
+        monitor: Optional connection quality monitor.
 
     Raises:
         TunnelError: If the tunnel cannot be established.
@@ -179,7 +198,14 @@ async def _handle_connect(
     log.info("CONNECT %s:%d", host, port)
 
     # Open the SOCKS5 tunnel (hostname passed as string — no local DNS!)
-    remote_reader, remote_writer = await open_tunnel(host, port, upstream)
+    result = await open_tunnel(host, port, upstream)
+    remote_reader = result.reader
+    remote_writer = result.writer
+    latency_ms = result.latency_ms
+
+    # Record successful tunnel establishment
+    if monitor is not None:
+        await monitor.record_success(latency_ms, target)
 
     # Tell the client the tunnel is established
     client_writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")

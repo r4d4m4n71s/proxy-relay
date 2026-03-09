@@ -33,6 +33,7 @@ port = 8080
 # enabled = true
 # slow_threshold_ms = 2000.0
 # error_threshold_count = 5
+# window_size = 100
 
 [anti_leak]
 # warn_timezone_mismatch = true
@@ -54,6 +55,7 @@ class MonitorConfig:
     enabled: bool = True
     slow_threshold_ms: float = 2000.0
     error_threshold_count: int = 5
+    window_size: int = 100
 
 
 @dataclass(frozen=True)
@@ -192,10 +194,16 @@ def _parse_config(data: dict) -> RelayConfig:
         raise ConfigError(
             f"monitor.error_threshold_count must be a non-negative integer, got: {error_count!r}"
         )
+    window_size = monitor_data.get("window_size", 100)
+    if not isinstance(window_size, int) or window_size < 1:
+        raise ConfigError(
+            f"monitor.window_size must be a positive integer, got: {window_size!r}"
+        )
     monitor = MonitorConfig(
         enabled=monitor_enabled,
         slow_threshold_ms=float(slow_threshold),
         error_threshold_count=error_count,
+        window_size=window_size,
     )
 
     # [anti_leak]

@@ -130,7 +130,7 @@ class TestServerConfig:
 
 
 class TestMonitorConfig:
-    """Test MonitorConfig defaults."""
+    """Test MonitorConfig defaults and window_size."""
 
     def test_defaults(self):
         from proxy_relay.config import MonitorConfig
@@ -139,6 +139,25 @@ class TestMonitorConfig:
         assert mc.slow_threshold_ms == 2000.0
         assert mc.error_threshold_count == 5
         assert mc.enabled is True
+
+    def test_window_size_default(self):
+        """window_size defaults to 100."""
+        from proxy_relay.config import MonitorConfig
+
+        mc = MonitorConfig()
+        assert mc.window_size == 100
+
+    def test_window_size_parsed_from_toml(self, tmp_path):
+        """window_size can be set from TOML config."""
+        from proxy_relay.config import RelayConfig
+
+        path = tmp_path / "config.toml"
+        path.write_text(
+            '[monitor]\n'
+            'window_size = 50\n'
+        )
+        cfg = RelayConfig.load(path)
+        assert cfg.monitor.window_size == 50
 
 
 class TestAntiLeakConfig:

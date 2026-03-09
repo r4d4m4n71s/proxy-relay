@@ -12,12 +12,27 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import NamedTuple
 
 from proxy_relay.exceptions import TunnelError
 from proxy_relay.logger import get_logger
 from proxy_relay.upstream import UpstreamInfo
 
 log = get_logger(__name__)
+
+class TunnelResult(NamedTuple):
+    """Result of a successful tunnel establishment.
+
+    Attributes:
+        reader: AsyncIO stream reader for the tunnel.
+        writer: AsyncIO stream writer for the tunnel.
+        latency_ms: Time taken to establish the tunnel in milliseconds.
+    """
+
+    reader: asyncio.StreamReader
+    writer: asyncio.StreamWriter
+    latency_ms: float
+
 
 # Buffer size for bidirectional relay (64 KiB)
 _RELAY_BUFFER_SIZE: int = 65536
@@ -30,7 +45,7 @@ async def open_tunnel(
     target_host: str,
     target_port: int,
     upstream: UpstreamInfo,
-) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+) -> TunnelResult:
     """Establish a SOCKS5 tunnel to the target through the upstream proxy.
 
     Connects to the upstream SOCKS5 proxy, performs the SOCKS5 handshake
@@ -47,7 +62,7 @@ async def open_tunnel(
         upstream: Parsed upstream SOCKS5 connection parameters.
 
     Returns:
-        Tuple of (reader, writer) for the established tunnel.
+        TunnelResult with reader, writer, and latency_ms.
 
     Raises:
         TunnelError: If the SOCKS5 handshake fails, the target is unreachable,
@@ -115,7 +130,7 @@ async def open_tunnel(
         elapsed_ms,
     )
 
-    return reader, writer
+    return TunnelResult(reader=reader, writer=writer, latency_ms=elapsed_ms)
 
 
 async def relay_data(

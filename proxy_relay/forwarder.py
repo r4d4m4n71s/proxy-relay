@@ -79,7 +79,9 @@ async def forward_http_request(
     remote_reader: asyncio.StreamReader | None = None
     remote_writer: asyncio.StreamWriter | None = None
     try:
-        remote_reader, remote_writer = await open_tunnel(host, port, upstream)
+        result = await open_tunnel(host, port, upstream)
+        remote_reader = result.reader
+        remote_writer = result.writer
 
         # Send the request
         remote_writer.write(raw_request)

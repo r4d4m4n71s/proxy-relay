@@ -91,9 +91,10 @@ class TestOpenTunnel:
              patch("asyncio.open_connection", new_callable=AsyncMock) as mock_open:
             mock_open.return_value = (mock_reader, mock_writer)
 
-            reader, writer = await open_tunnel(target_host, target_port, upstream)
+            result = await open_tunnel(target_host, target_port, upstream)
 
-            # Verify the Proxy.connect received the hostname as string
+            # Result may be a TunnelResult (3-tuple) or plain (reader, writer)
+            # Either way, the SOCKS connector must receive the hostname as string
             proxy_instance.connect.assert_called_once_with(
                 dest_host=target_host,
                 dest_port=target_port,
@@ -117,11 +118,76 @@ class TestOpenTunnel:
              patch("asyncio.open_connection", new_callable=AsyncMock) as mock_open:
             mock_open.return_value = (mock_reader, mock_writer)
 
-            await open_tunnel("example.com", 443, upstream)
+            _result = await open_tunnel("example.com", 443, upstream)
 
             # Verify rdns=True was passed to Proxy constructor
             call_kwargs = MockProxy.call_args.kwargs
             assert call_kwargs.get("rdns") is True
+
+
+class TestTunnelResult:
+    """Test TunnelResult NamedTuple returned by open_tunnel."""
+
+    @pytest.mark.asyncio
+    async def test_open_tunnel_returns_tunnel_result(self):
+        """open_tunnel should return a TunnelResult with reader, writer, latency_ms."""
+        from proxy_relay.tunnel import TunnelResult, open_tunnel
+
+        upstream = _make_upstream()
+
+        mock_sock = MagicMock()
+        mock_reader = AsyncMock(spec=asyncio.StreamReader)
+        mock_writer = AsyncMock(spec=asyncio.StreamWriter)
+
+        proxy_instance = MagicMock()
+        proxy_instance.connect = AsyncMock(return_value=mock_sock)
+
+        with patch("python_socks.async_.asyncio.Proxy", return_value=proxy_instance), \
+             patch("asyncio.open_connection", new_callable=AsyncMock) as mock_open:
+            mock_open.return_value = (mock_reader, mock_writer)
+
+            result = await open_tunnel("example.com", 443, upstream)
+
+            # Should be a TunnelResult with all three fields
+            assert hasattr(result, "reader")
+            assert hasattr(result, "writer")
+            assert hasattr(result, "latency_ms")
+            assert result.reader is mock_reader
+            assert result.writer is mock_writer
+            assert result.latency_ms >= 0.0
+
+    def test_tunnel_result_is_named_tuple(self):
+        """TunnelResult should be a NamedTuple with 3 fields."""
+        from proxy_relay.tunnel import TunnelResult
+
+        # Verify it has the expected field names
+        assert "reader" in TunnelResult._fields
+        assert "writer" in TunnelResult._fields
+        assert "latency_ms" in TunnelResult._fields
+
+    @pytest.mark.asyncio
+    async def test_tunnel_result_unpacks_to_three_values(self):
+        """TunnelResult can be unpacked into reader, writer, latency_ms."""
+        from proxy_relay.tunnel import open_tunnel
+
+        upstream = _make_upstream()
+
+        mock_sock = MagicMock()
+        mock_reader = AsyncMock(spec=asyncio.StreamReader)
+        mock_writer = AsyncMock(spec=asyncio.StreamWriter)
+
+        proxy_instance = MagicMock()
+        proxy_instance.connect = AsyncMock(return_value=mock_sock)
+
+        with patch("python_socks.async_.asyncio.Proxy", return_value=proxy_instance), \
+             patch("asyncio.open_connection", new_callable=AsyncMock) as mock_open:
+            mock_open.return_value = (mock_reader, mock_writer)
+
+            reader, writer, latency_ms = await open_tunnel("example.com", 443, upstream)
+
+            assert reader is mock_reader
+            assert writer is mock_writer
+            assert latency_ms >= 0.0
 
 
 class TestRelayData:

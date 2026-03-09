@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from proxy_relay.tunnel import TunnelResult
 from proxy_relay.upstream import UpstreamInfo
 
 
@@ -18,6 +19,22 @@ def _make_upstream() -> UpstreamInfo:
         username="user", password="pass",
         url="socks5://***@proxy.example.com:12322", country="us",
     )
+
+
+def _make_tunnel_result(
+    reader: AsyncMock | None = None,
+    writer: AsyncMock | None = None,
+    latency_ms: float = 50.0,
+) -> TunnelResult:
+    """Build a TunnelResult with mock streams."""
+    if reader is None:
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        reader.read = AsyncMock(return_value=b"")
+    if writer is None:
+        writer = AsyncMock(spec=asyncio.StreamWriter)
+        writer.close = MagicMock()
+        writer.wait_closed = AsyncMock()
+    return TunnelResult(reader=reader, writer=writer, latency_ms=latency_ms)
 
 
 class TestHandlerDNSLeak:
@@ -71,16 +88,11 @@ class TestHandleConnection:
         writer.get_extra_info = MagicMock(return_value=("127.0.0.1", 9999))
 
         upstream = _make_upstream()
-
-        mock_remote_reader = AsyncMock(spec=asyncio.StreamReader)
-        mock_remote_reader.read = AsyncMock(return_value=b"")
-        mock_remote_writer = AsyncMock(spec=asyncio.StreamWriter)
-        mock_remote_writer.close = MagicMock()
-        mock_remote_writer.wait_closed = AsyncMock()
+        tunnel_result = _make_tunnel_result()
 
         with patch("proxy_relay.handler.open_tunnel", new_callable=AsyncMock) as mock_tunnel, \
              patch("proxy_relay.handler.relay_data", new_callable=AsyncMock) as mock_relay:
-            mock_tunnel.return_value = (mock_remote_reader, mock_remote_writer)
+            mock_tunnel.return_value = tunnel_result
             await handle_connection(reader, writer, upstream)
 
             mock_tunnel.assert_called_once()
@@ -136,3 +148,112 @@ class TestHandleConnection:
 
         # Writer should be closed
         assert writer.close.called
+
+
+class TestHandlerMonitorIntegration:
+    """Test handle_connection with the optional monitor parameter."""
+
+    @pytest.mark.asyncio
+    async def test_monitor_none_does_not_crash(self):
+        """handle_connection with monitor=None should work (backward compat)."""
+        from proxy_relay.handler import handle_connection
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        request = (
+            b"CONNECT example.com:443 HTTP/1.1\r\n"
+            b"Host: example.com:443\r\n"
+            b"\r\n"
+        )
+        reader.read = AsyncMock(return_value=request)
+
+        writer = AsyncMock(spec=asyncio.StreamWriter)
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        writer.close = MagicMock()
+        writer.wait_closed = AsyncMock()
+        writer.get_extra_info = MagicMock(return_value=("127.0.0.1", 9999))
+
+        upstream = _make_upstream()
+        tunnel_result = _make_tunnel_result()
+
+        with patch("proxy_relay.handler.open_tunnel", new_callable=AsyncMock) as mock_tunnel, \
+             patch("proxy_relay.handler.relay_data", new_callable=AsyncMock):
+            mock_tunnel.return_value = tunnel_result
+
+            # Should not raise -- monitor=None is the default
+            await handle_connection(reader, writer, upstream)
+
+    @pytest.mark.asyncio
+    async def test_monitor_record_success_called_on_connect(self):
+        """On successful CONNECT, monitor.record_success should be called."""
+        from proxy_relay.handler import handle_connection
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        request = (
+            b"CONNECT example.com:443 HTTP/1.1\r\n"
+            b"Host: example.com:443\r\n"
+            b"\r\n"
+        )
+        reader.read = AsyncMock(return_value=request)
+
+        writer = AsyncMock(spec=asyncio.StreamWriter)
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        writer.close = MagicMock()
+        writer.wait_closed = AsyncMock()
+        writer.get_extra_info = MagicMock(return_value=("127.0.0.1", 9999))
+
+        upstream = _make_upstream()
+        tunnel_result = _make_tunnel_result(latency_ms=75.0)
+
+        # Create a mock monitor
+        mock_monitor = AsyncMock()
+        mock_monitor.enabled = True
+        mock_monitor.record_success = AsyncMock()
+        mock_monitor.record_error = AsyncMock()
+
+        with patch("proxy_relay.handler.open_tunnel", new_callable=AsyncMock) as mock_tunnel, \
+             patch("proxy_relay.handler.relay_data", new_callable=AsyncMock):
+            mock_tunnel.return_value = tunnel_result
+
+            await handle_connection(reader, writer, upstream, monitor=mock_monitor)
+
+            mock_monitor.record_success.assert_called_once()
+            # Verify latency was passed through
+            call_args = mock_monitor.record_success.call_args
+            assert call_args[0][0] == pytest.approx(75.0)
+
+    @pytest.mark.asyncio
+    async def test_monitor_record_error_called_on_tunnel_error(self):
+        """On TunnelError, monitor.record_error should be called."""
+        from proxy_relay.exceptions import TunnelError
+        from proxy_relay.handler import handle_connection
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        request = (
+            b"CONNECT example.com:443 HTTP/1.1\r\n"
+            b"Host: example.com:443\r\n"
+            b"\r\n"
+        )
+        reader.read = AsyncMock(return_value=request)
+
+        writer = AsyncMock(spec=asyncio.StreamWriter)
+        writer.write = MagicMock()
+        writer.drain = AsyncMock()
+        writer.close = MagicMock()
+        writer.wait_closed = AsyncMock()
+        writer.get_extra_info = MagicMock(return_value=("127.0.0.1", 9999))
+
+        upstream = _make_upstream()
+
+        mock_monitor = AsyncMock()
+        mock_monitor.record_success = AsyncMock()
+        mock_monitor.record_error = AsyncMock()
+
+        with patch("proxy_relay.handler.open_tunnel", new_callable=AsyncMock) as mock_tunnel, \
+             patch("proxy_relay.handler.relay_data", new_callable=AsyncMock):
+            mock_tunnel.side_effect = TunnelError("SOCKS5 handshake failed")
+
+            await handle_connection(reader, writer, upstream, monitor=mock_monitor)
+
+            mock_monitor.record_error.assert_called_once()
