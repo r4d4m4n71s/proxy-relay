@@ -6,9 +6,10 @@ import asyncio
 import json
 import signal
 import sys
+from pathlib import Path
 
 from proxy_relay import __version__
-from proxy_relay.config import RelayConfig
+from proxy_relay.config import MonitorConfig, RelayConfig
 from proxy_relay.exceptions import ConfigError, ProxyRelayError, UpstreamError
 from proxy_relay.logger import configure_logging, get_logger
 from proxy_relay.pidfile import is_process_running, read_pid, read_status, send_signal
@@ -61,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="proxy-st profile name (default: from config or 'browse')",
     )
     start_parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to config file (default: ~/.config/proxy-relay/config.toml)",
+    )
+    start_parser.add_argument(
         "--log-level",
         type=str,
         default=None,
@@ -104,9 +111,16 @@ def _cmd_start(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success, non-zero for error).
     """
+    # Check for existing instance
+    pid = read_pid()
+    if pid is not None and is_process_running(pid):
+        print(f"proxy-relay is already running (PID {pid})", file=sys.stderr)
+        return 1
+
     # Load configuration
+    config_path = Path(args.config) if args.config else None
     try:
-        config = RelayConfig.load()
+        config = RelayConfig.load(config_path)
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
@@ -149,7 +163,7 @@ async def _run(
     host: str,
     port: int,
     profile_name: str,
-    monitor_config: "MonitorConfig | None" = None,
+    monitor_config: MonitorConfig | None = None,
 ) -> None:
     """Create and run the proxy server.
 
@@ -159,8 +173,6 @@ async def _run(
         profile_name: proxy-st profile name.
         monitor_config: Optional monitor configuration.
     """
-    from proxy_relay.config import MonitorConfig  # noqa: F811 — deferred to avoid circular
-
     manager = UpstreamManager(profile_name)
     server = ProxyServer(
         host=host,

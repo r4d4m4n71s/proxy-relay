@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from proxy_relay.tunnel import TunnelResult
 from proxy_relay.upstream import UpstreamInfo
 
 
@@ -102,7 +103,11 @@ class TestForwardHttpRequest:
         upstream = _make_upstream()
 
         with patch("proxy_relay.forwarder.open_tunnel", new_callable=AsyncMock) as mock_tunnel:
-            mock_tunnel.return_value = (mock_remote_reader, mock_remote_writer)
+            mock_tunnel.return_value = TunnelResult(
+                reader=mock_remote_reader,
+                writer=mock_remote_writer,
+                latency_ms=50.0,
+            )
 
             await forward_http_request(
                 method="GET",
@@ -148,7 +153,11 @@ class TestForwardHttpRequest:
         upstream = _make_upstream()
 
         with patch("proxy_relay.forwarder.open_tunnel", new_callable=AsyncMock) as mock_tunnel:
-            mock_tunnel.return_value = (mock_remote_reader, mock_remote_writer)
+            mock_tunnel.return_value = TunnelResult(
+                reader=mock_remote_reader,
+                writer=mock_remote_writer,
+                latency_ms=50.0,
+            )
 
             await forward_http_request(
                 method="GET",
@@ -191,7 +200,11 @@ class TestForwardHttpRequest:
         upstream = _make_upstream()
 
         with patch("proxy_relay.forwarder.open_tunnel", new_callable=AsyncMock) as mock_tunnel:
-            mock_tunnel.return_value = (mock_remote_reader, mock_remote_writer)
+            mock_tunnel.return_value = TunnelResult(
+                reader=mock_remote_reader,
+                writer=mock_remote_writer,
+                latency_ms=50.0,
+            )
 
             await forward_http_request(
                 method="GET",
