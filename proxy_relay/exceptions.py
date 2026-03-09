@@ -29,3 +29,11 @@ class TunnelError(ProxyRelayError):
     unreachable through the upstream, or the bidirectional relay
     encounters an unrecoverable I/O error.
     """
+
+
+class BrowseError(ProxyRelayError):
+    """Browser launch or supervision error.
+
+    Raised when Chromium cannot be found, the health check fails,
+    or the proxy dies while the browser is running.
+    """

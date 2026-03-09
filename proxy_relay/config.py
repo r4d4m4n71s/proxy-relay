@@ -37,6 +37,9 @@ port = 8080
 
 [anti_leak]
 # warn_timezone_mismatch = true
+
+[browse]
+# rotate_interval_min = 30  # auto-rotate every N minutes (0 = disabled)
 """
 
 
@@ -65,6 +68,13 @@ class AntiLeakConfig:
     warn_timezone_mismatch: bool = True
 
 
+@dataclass(frozen=True)
+class BrowseConfig:
+    """Browser launch and auto-rotation settings."""
+
+    rotate_interval_min: int = 30
+
+
 @dataclass
 class RelayConfig:
     """Root configuration for proxy-relay."""
@@ -74,6 +84,7 @@ class RelayConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     anti_leak: AntiLeakConfig = field(default_factory=AntiLeakConfig)
+    browse: BrowseConfig = field(default_factory=BrowseConfig)
 
     @classmethod
     def load(cls, path: Path | None = None) -> RelayConfig:
@@ -215,12 +226,22 @@ def _parse_config(data: dict) -> RelayConfig:
         )
     anti_leak = AntiLeakConfig(warn_timezone_mismatch=warn_tz)
 
+    # [browse]
+    browse_data = data.get("browse", {})
+    rotate_interval = browse_data.get("rotate_interval_min", 30)
+    if not isinstance(rotate_interval, int) or rotate_interval < 0:
+        raise ConfigError(
+            f"browse.rotate_interval_min must be a non-negative integer, got: {rotate_interval!r}"
+        )
+    browse_cfg = BrowseConfig(rotate_interval_min=rotate_interval)
+
     config = RelayConfig(
         log_level=log_level,
         proxy_st_profile=proxy_st_profile,
         server=server,
         monitor=monitor,
         anti_leak=anti_leak,
+        browse=browse_cfg,
     )
 
     log.debug(

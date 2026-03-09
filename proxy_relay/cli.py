@@ -10,7 +10,8 @@ from pathlib import Path
 
 from proxy_relay import __version__
 from proxy_relay.config import MonitorConfig, RelayConfig
-from proxy_relay.exceptions import ConfigError, ProxyRelayError, UpstreamError
+from proxy_relay import browse as _browse
+from proxy_relay.exceptions import BrowseError, ConfigError, ProxyRelayError, UpstreamError
 from proxy_relay.logger import configure_logging, get_logger
 from proxy_relay.pidfile import is_process_running, read_pid, read_status, send_signal
 from proxy_relay.server import ProxyServer
@@ -97,6 +98,30 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "rotate",
         help="Trigger upstream proxy rotation (sends SIGUSR1)",
+    )
+
+    # browse subcommand
+    browse_parser = subparsers.add_parser(
+        "browse",
+        help="Launch Chromium through the running proxy relay",
+    )
+    browse_parser.add_argument(
+        "--rotate-min",
+        type=int,
+        default=None,
+        help="Auto-rotate interval in minutes (default: from config or 30)",
+    )
+    browse_parser.add_argument(
+        "--no-rotate",
+        action="store_true",
+        default=False,
+        help="Disable auto-rotation",
+    )
+    browse_parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to config file",
     )
 
     return parser
@@ -306,6 +331,87 @@ def _cmd_rotate(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_browse(args: argparse.Namespace) -> int:
+    """Execute the 'browse' subcommand.
+
+    Launches Chromium through the running proxy relay, with optional
+    auto-rotation of the upstream proxy.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        Exit code (0 for success, non-zero for error).
+    """
+    # 1. Check PID + liveness
+    pid = read_pid()
+    if pid is None or not is_process_running(pid):
+        print("proxy-relay is not running — start it first with: proxy-relay start", file=sys.stderr)
+        return 1
+
+    # 2. Load config
+    config_path = Path(args.config) if args.config else None
+    try:
+        config = RelayConfig.load(config_path)
+    except ConfigError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 1
+
+    # 3. Read status.json for actual host/port, falling back to config
+    status_data = read_status()
+    if status_data is not None:
+        host = status_data.get("host", config.server.host)
+        port = status_data.get("port", config.server.port)
+    else:
+        host = config.server.host
+        port = config.server.port
+
+    # 4. Health check
+    try:
+        exit_ip = _browse.health_check(host, port)
+        print(f"Proxy chain verified — exit IP: {exit_ip}")
+    except BrowseError as exc:
+        print(f"Health check failed: {exc}", file=sys.stderr)
+        return 1
+
+    # 5. Find Chromium
+    try:
+        chromium_path = _browse.find_chromium()
+        log.info("Found Chromium at %s", chromium_path)
+    except BrowseError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    # 6. Determine profile dir
+    profile_dir = _browse.get_profile_dir(config.proxy_st_profile)
+
+    # 7. Resolve rotation interval
+    if args.no_rotate:
+        rotate_min = 0
+    elif args.rotate_min is not None:
+        rotate_min = args.rotate_min
+    else:
+        rotate_min = config.browse.rotate_interval_min
+
+    # 8. Create supervisor and run
+    supervisor = _browse.BrowseSupervisor(
+        chromium_path=chromium_path,
+        proxy_host=host,
+        proxy_port=port,
+        profile_dir=profile_dir,
+        relay_pid=pid,
+        rotate_interval_min=rotate_min,
+    )
+
+    if rotate_min > 0:
+        print(f"Auto-rotation enabled: every {rotate_min} minutes")
+    else:
+        print("Auto-rotation disabled")
+
+    print(f"Launching Chromium (profile: {config.proxy_st_profile})...")
+    return supervisor.run()
+
+
 def main() -> None:
     """Entry point for the proxy-relay CLI."""
     parser = build_parser()
@@ -320,6 +426,7 @@ def main() -> None:
         "stop": _cmd_stop,
         "status": _cmd_status,
         "rotate": _cmd_rotate,
+        "browse": _cmd_browse,
     }
 
     handler = dispatch.get(args.command)
