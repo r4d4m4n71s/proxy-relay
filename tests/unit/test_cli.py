@@ -92,23 +92,23 @@ class TestCmdStop:
 
     def test_no_pid_file_returns_1(self):
         """Returns 1 when no PID file exists."""
-        args = argparse.Namespace()
+        args = argparse.Namespace(profile=None)
         with patch("proxy_relay.cli.read_pid", return_value=None):
             result = _cmd_stop(args)
         assert result == 1
 
     def test_stale_pid_returns_1(self):
         """Returns 1 when PID exists but process is not running."""
-        args = argparse.Namespace()
+        args = argparse.Namespace(profile=None)
         with patch("proxy_relay.cli.read_pid", return_value=12345), \
              patch("proxy_relay.cli.is_process_running", return_value=False), \
-             patch("proxy_relay.pidfile.remove_pid"):
+             patch("proxy_relay.cli.remove_pid"):
             result = _cmd_stop(args)
         assert result == 1
 
     def test_running_process_sends_sigterm(self):
         """Sends SIGTERM and returns 0 when process is running."""
-        args = argparse.Namespace()
+        args = argparse.Namespace(profile=None)
         with patch("proxy_relay.cli.read_pid", return_value=12345), \
              patch("proxy_relay.cli.is_process_running", return_value=True), \
              patch("proxy_relay.cli.send_signal", return_value=True) as mock_send:
@@ -118,7 +118,7 @@ class TestCmdStop:
 
     def test_signal_failure_returns_1(self):
         """Returns 1 when send_signal fails."""
-        args = argparse.Namespace()
+        args = argparse.Namespace(profile=None)
         with patch("proxy_relay.cli.read_pid", return_value=12345), \
              patch("proxy_relay.cli.is_process_running", return_value=True), \
              patch("proxy_relay.cli.send_signal", return_value=False):
@@ -131,7 +131,7 @@ class TestCmdStatus:
 
     def test_not_running_returns_1(self):
         """Returns 1 when not running."""
-        args = argparse.Namespace(json_output=False)
+        args = argparse.Namespace(json_output=False, profile=None)
         with patch("proxy_relay.cli.read_pid", return_value=None), \
              patch("proxy_relay.cli.is_process_running", return_value=False), \
              patch("proxy_relay.cli.read_status", return_value=None):
@@ -140,7 +140,7 @@ class TestCmdStatus:
 
     def test_running_returns_0(self):
         """Returns 0 when running."""
-        args = argparse.Namespace(json_output=False)
+        args = argparse.Namespace(json_output=False, profile=None)
         with patch("proxy_relay.cli.read_pid", return_value=12345), \
              patch("proxy_relay.cli.is_process_running", return_value=True), \
              patch("proxy_relay.cli.read_status", return_value=None):
@@ -149,7 +149,7 @@ class TestCmdStatus:
 
     def test_json_output_returns_0_when_not_running(self):
         """JSON output returns 0 even when not running."""
-        args = argparse.Namespace(json_output=True)
+        args = argparse.Namespace(json_output=True, profile=None)
         with patch("proxy_relay.cli.read_pid", return_value=None), \
              patch("proxy_relay.cli.is_process_running", return_value=False), \
              patch("proxy_relay.cli.read_status", return_value=None):
@@ -158,7 +158,7 @@ class TestCmdStatus:
 
     def test_json_output_includes_status_data(self, capsys):
         """JSON output includes status data when available."""
-        args = argparse.Namespace(json_output=True)
+        args = argparse.Namespace(json_output=True, profile=None)
         status = {"host": "127.0.0.1", "port": 8080}
         with patch("proxy_relay.cli.read_pid", return_value=12345), \
              patch("proxy_relay.cli.is_process_running", return_value=True), \
@@ -174,7 +174,7 @@ class TestCmdStatus:
 
     def test_json_output_not_running_shows_false(self, capsys):
         """JSON output shows running=false when not running."""
-        args = argparse.Namespace(json_output=True)
+        args = argparse.Namespace(json_output=True, profile=None)
         with patch("proxy_relay.cli.read_pid", return_value=None), \
              patch("proxy_relay.cli.is_process_running", return_value=False), \
              patch("proxy_relay.cli.read_status", return_value=None):
@@ -186,7 +186,7 @@ class TestCmdStatus:
 
     def test_status_displays_monitor_stats(self, capsys):
         """Status shows monitor stats when available."""
-        args = argparse.Namespace(json_output=False)
+        args = argparse.Namespace(json_output=False, profile=None)
         status = {
             "host": "127.0.0.1",
             "port": 8080,
@@ -213,7 +213,7 @@ class TestCmdStatus:
 
     def test_stale_pid_shows_not_running(self, capsys):
         """Stale PID is displayed in human-readable output."""
-        args = argparse.Namespace(json_output=False)
+        args = argparse.Namespace(json_output=False, profile=None)
         with patch("proxy_relay.cli.read_pid", return_value=99999), \
              patch("proxy_relay.cli.is_process_running", return_value=False), \
              patch("proxy_relay.cli.read_status", return_value=None):
@@ -229,14 +229,14 @@ class TestCmdRotate:
 
     def test_no_pid_returns_1(self):
         """Returns 1 when no PID file."""
-        args = argparse.Namespace()
+        args = argparse.Namespace(profile=None)
         with patch("proxy_relay.cli.read_pid", return_value=None):
             result = _cmd_rotate(args)
         assert result == 1
 
     def test_sends_sigusr1(self):
         """Sends SIGUSR1 and returns 0."""
-        args = argparse.Namespace()
+        args = argparse.Namespace(profile=None)
         with patch("proxy_relay.cli.read_pid", return_value=12345), \
              patch("proxy_relay.cli.is_process_running", return_value=True), \
              patch("proxy_relay.cli.send_signal", return_value=True) as mock_send:
@@ -246,7 +246,7 @@ class TestCmdRotate:
 
     def test_stale_pid_returns_1(self):
         """Returns 1 when PID exists but process is not running."""
-        args = argparse.Namespace()
+        args = argparse.Namespace(profile=None)
         with patch("proxy_relay.cli.read_pid", return_value=12345), \
              patch("proxy_relay.cli.is_process_running", return_value=False):
             result = _cmd_rotate(args)
@@ -254,7 +254,7 @@ class TestCmdRotate:
 
     def test_signal_failure_returns_1(self):
         """Returns 1 when send_signal fails."""
-        args = argparse.Namespace()
+        args = argparse.Namespace(profile=None)
         with patch("proxy_relay.cli.read_pid", return_value=12345), \
              patch("proxy_relay.cli.is_process_running", return_value=True), \
              patch("proxy_relay.cli.send_signal", return_value=False):
@@ -268,12 +268,15 @@ class TestCmdStart:
     def test_already_running_returns_1(self):
         """Returns 1 when another instance is already running."""
         from proxy_relay.cli import _cmd_start
+        from proxy_relay.config import RelayConfig
 
         args = argparse.Namespace(
             host=None, port=None, profile=None, log_level=None, config=None,
         )
-        with patch("proxy_relay.cli.read_pid", return_value=99999), \
-             patch("proxy_relay.cli.is_process_running", return_value=True):
+        with patch("proxy_relay.cli.RelayConfig.load", return_value=RelayConfig()), \
+             patch("proxy_relay.cli.read_pid", return_value=99999), \
+             patch("proxy_relay.cli.is_process_running", return_value=True), \
+             patch("proxy_relay.cli.configure_logging"):
             result = _cmd_start(args)
         assert result == 1
 

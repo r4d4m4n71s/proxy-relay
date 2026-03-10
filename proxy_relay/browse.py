@@ -6,10 +6,13 @@ Optionally auto-rotates the upstream proxy at a configurable interval.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -17,12 +20,11 @@ from pathlib import Path
 from proxy_relay.config import CONFIG_DIR
 from proxy_relay.exceptions import BrowseError
 from proxy_relay.logger import get_logger
-from proxy_relay.pidfile import is_process_running, send_signal
+from proxy_relay.pidfile import is_process_running, read_status, send_signal, status_path_for
 
 log = get_logger(__name__)
 
-_HEALTH_CHECK_URL: str = "http://icanhazip.com"
-_HEALTH_CHECK_TIMEOUT: float = 15.0
+_HEALTH_CHECK_TIMEOUT: float = 60.0
 _PID_POLL_INTERVAL: float = 2.0
 _CHROMIUM_CANDIDATES: tuple[str, ...] = (
     "/snap/bin/chromium",
@@ -31,6 +33,9 @@ _CHROMIUM_CANDIDATES: tuple[str, ...] = (
     "google-chrome",
 )
 BROWSER_PROFILES_DIR: Path = CONFIG_DIR / "browser-profiles"
+
+# Snap Chromium can only write to ~/snap/chromium/common/ due to sandbox restrictions.
+_SNAP_PROFILES_DIR: Path = Path.home() / "snap" / "chromium" / "common" / "proxy-relay-profiles"
 
 
 def find_chromium() -> Path:
@@ -63,56 +68,231 @@ def find_chromium() -> Path:
 
 
 def health_check(proxy_host: str, proxy_port: int) -> str:
-    """Verify the proxy chain is working by fetching the exit IP.
+    """Verify the proxy chain by calling the server's internal health endpoint.
 
-    Uses ``urllib.request`` with a proxy handler to route the request
-    through the local relay.
+    Sends a plain HTTP GET to ``http://proxy_host:proxy_port/__health``.
+    The server handles upstream verification internally — including
+    automatic rotation and retry when the upstream is unreachable.
 
     Args:
         proxy_host: Local proxy bind address.
         proxy_port: Local proxy bind port.
 
     Returns:
-        The exit IP address (response body, stripped).
+        The exit IP address reported by the server.
 
     Raises:
-        BrowseError: If the health check request fails for any reason.
+        BrowseError: If the health endpoint returns an error or is unreachable.
     """
-    proxy_url = f"http://{proxy_host}:{proxy_port}"
-    proxy_handler = urllib.request.ProxyHandler(
-        {"http": proxy_url, "https": proxy_url}
-    )
-    opener = urllib.request.build_opener(proxy_handler)
+    import json
+
+    health_url = f"http://{proxy_host}:{proxy_port}/__health"
 
     try:
-        with opener.open(_HEALTH_CHECK_URL, timeout=_HEALTH_CHECK_TIMEOUT) as response:
-            body = response.read().decode("utf-8").strip()
-            log.debug("Health check returned exit IP: %s", body)
-            return body
+        with urllib.request.urlopen(health_url, timeout=_HEALTH_CHECK_TIMEOUT) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            exit_ip = data.get("exit_ip", "")
+            log.debug("Health check returned exit IP: %s", exit_ip)
+            return exit_ip
     except urllib.error.HTTPError as exc:
-        raise BrowseError(
-            f"Health check failed with HTTP {exc.code}: {exc.reason}"
-        ) from exc
+        try:
+            data = json.loads(exc.read().decode("utf-8"))
+            error_msg = data.get("error", str(exc))
+        except Exception:
+            error_msg = f"HTTP {exc.code}: {exc.reason}"
+        raise BrowseError(f"Health check failed: {error_msg}") from exc
     except urllib.error.URLError as exc:
-        raise BrowseError(f"Health check failed — proxy unreachable: {exc.reason}") from exc
+        raise BrowseError(f"Health check failed — server unreachable: {exc.reason}") from exc
     except (OSError, TimeoutError) as exc:
         raise BrowseError(f"Health check failed: {exc}") from exc
 
 
-def get_profile_dir(profile_name: str) -> Path:
-    """Return (and create) a browser profile directory.
+def _is_snap_chromium(chromium_path: Path) -> bool:
+    """Return True if the Chromium binary is a Snap package.
+
+    Snap Chromium lives under ``/snap/`` and its sandbox restricts
+    filesystem writes to ``~/snap/chromium/common/``.
 
     Args:
-        profile_name: Name used as the subdirectory under
-            ``BROWSER_PROFILES_DIR``.
+        chromium_path: Path to the Chromium binary.
+
+    Returns:
+        True if the binary path is under ``/snap/``.
+    """
+    return str(chromium_path).startswith("/snap/")
+
+
+def get_profile_dir(profile_name: str, chromium_path: Path | None = None) -> Path:
+    """Return (and create) a browser profile directory.
+
+    When Chromium is a Snap package, the profile is placed under
+    ``~/snap/chromium/common/proxy-relay-profiles/`` because the Snap
+    sandbox prevents writing to ``~/.config/proxy-relay/``.
+
+    Args:
+        profile_name: Name used as the subdirectory.
+        chromium_path: Path to the Chromium binary.  Used to detect Snap
+            and select the appropriate base directory.
 
     Returns:
         Path to the profile directory (guaranteed to exist).
     """
-    profile_dir = BROWSER_PROFILES_DIR / profile_name
+    if chromium_path is not None and _is_snap_chromium(chromium_path):
+        base = _SNAP_PROFILES_DIR
+        log.debug("Snap Chromium detected — using %s for profiles", base)
+    else:
+        base = BROWSER_PROFILES_DIR
+
+    profile_dir = base / profile_name
     profile_dir.mkdir(parents=True, exist_ok=True)
     log.debug("Browser profile directory: %s", profile_dir)
     return profile_dir
+
+
+_SERVER_READY_POLL_INTERVAL: float = 0.5
+_SERVER_READY_TIMEOUT: float = 30.0
+
+
+def auto_start_server(
+    profile_name: str,
+    host: str = "127.0.0.1",
+    config_path: Path | None = None,
+    log_level: str = "INFO",
+) -> subprocess.Popen[bytes]:
+    """Start a proxy-relay server subprocess for the given profile.
+
+    Launches ``proxy-relay start --profile <name> --port 0 --host <host>``
+    as a child process. The server binds to an OS-assigned free port and
+    writes the actual port to ``{profile_name}.status.json``.
+
+    Args:
+        profile_name: proxy-st profile name.
+        host: Local bind address.
+        config_path: Optional path to config file.
+        log_level: Log level for the server subprocess.
+
+    Returns:
+        The Popen handle for the server process.
+
+    Raises:
+        BrowseError: If the subprocess cannot be started.
+    """
+    cmd = [
+        sys.executable, "-m", "proxy_relay",
+        "start",
+        "--profile", profile_name,
+        "--port", "0",
+        "--host", host,
+        "--log-level", log_level,
+    ]
+    if config_path is not None:
+        cmd.extend(["--config", str(config_path)])
+
+    log.info("Auto-starting server for profile %r: %s", profile_name, " ".join(cmd))
+
+    try:
+        return subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )  # noqa: S603
+    except OSError as exc:
+        raise BrowseError(
+            f"Failed to start server subprocess for profile {profile_name!r}: {exc}"
+        ) from exc
+
+
+def wait_for_server_ready(
+    profile_name: str,
+    server_proc: subprocess.Popen[bytes],
+    timeout: float = _SERVER_READY_TIMEOUT,
+) -> tuple[str, int]:
+    """Wait for the auto-started server to write its status file.
+
+    Polls for the profile's status.json to appear and contain a valid
+    host and port.  Also checks that the server process has not exited
+    unexpectedly.
+
+    Args:
+        profile_name: proxy-st profile name.
+        server_proc: The server subprocess handle.
+        timeout: Maximum seconds to wait.
+
+    Returns:
+        Tuple of (host, port) read from the status file.
+
+    Raises:
+        BrowseError: If the server exits early, times out, or the
+            status file is invalid.
+    """
+    status_path = status_path_for(profile_name)
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        # Check if server died
+        if server_proc.poll() is not None:
+            raise BrowseError(
+                f"Server process exited with code {server_proc.returncode} "
+                f"before becoming ready (profile: {profile_name!r})"
+            )
+
+        # Check for status file
+        status = read_status(status_path)
+        if status is not None:
+            port = status.get("port", 0)
+            host = status.get("host", "127.0.0.1")
+            if isinstance(port, int) and port > 0:
+                log.info(
+                    "Server ready for profile %r at %s:%d",
+                    profile_name, host, port,
+                )
+                return host, port
+
+        time.sleep(_SERVER_READY_POLL_INTERVAL)
+
+    # Timeout — kill the server and raise
+    server_proc.terminate()
+    try:
+        server_proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        server_proc.kill()
+    raise BrowseError(
+        f"Server for profile {profile_name!r} did not become ready "
+        f"within {timeout:.0f}s"
+    )
+
+
+def auto_stop_server(
+    server_proc: subprocess.Popen[bytes],
+    profile_name: str,
+) -> None:
+    """Stop an auto-started server subprocess gracefully.
+
+    Sends SIGTERM, waits up to 5 seconds, then SIGKILL if needed.
+
+    Args:
+        server_proc: The server subprocess handle.
+        profile_name: proxy-st profile name (for log messages).
+    """
+    if server_proc.poll() is not None:
+        log.debug(
+            "Server for profile %r already exited (code %d)",
+            profile_name, server_proc.returncode,
+        )
+        return
+
+    log.info("Stopping auto-started server for profile %r (PID %d)", profile_name, server_proc.pid)
+    try:
+        server_proc.terminate()
+        server_proc.wait(timeout=5)
+        log.debug("Server terminated gracefully")
+    except subprocess.TimeoutExpired:
+        log.warning("Server did not exit in 5s — force killing")
+        server_proc.kill()
+        try:
+            server_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            log.error("Server did not respond to SIGKILL within 5s")
 
 
 class BrowseSupervisor:
@@ -129,6 +309,11 @@ class BrowseSupervisor:
         profile_dir: Path to the browser user-data directory.
         relay_pid: PID of the running proxy-relay daemon.
         rotate_interval_min: Minutes between auto-rotations (0 = disabled).
+        timezone: IANA timezone name to set on the Chromium process
+            (e.g., ``"Europe/Berlin"``).  When set, Chromium's ``TZ``
+            environment variable is overridden so JavaScript reports a
+            timezone consistent with the proxy exit country.  None means
+            inherit the system timezone.
     """
 
     def __init__(
@@ -140,6 +325,7 @@ class BrowseSupervisor:
         profile_dir: Path,
         relay_pid: int,
         rotate_interval_min: int = 30,
+        timezone: str | None = None,
     ) -> None:
         self._chromium_path = chromium_path
         self._proxy_host = proxy_host
@@ -147,6 +333,7 @@ class BrowseSupervisor:
         self._profile_dir = profile_dir
         self._relay_pid = relay_pid
         self._rotate_interval_min = rotate_interval_min
+        self._timezone = timezone
 
         self._stop_event = threading.Event()
         self._chromium_proc: subprocess.Popen[bytes] | None = None
@@ -210,10 +397,15 @@ class BrowseSupervisor:
             "--disable-default-apps",
             "--disable-sync",
         ]
+        env: dict[str, str] | None = None
+        if self._timezone:
+            env = {**os.environ, "TZ": self._timezone}
+            log.info("Setting browser timezone: TZ=%s", self._timezone)
+
         log.debug("Launching Chromium: %s", " ".join(cmd))
 
         try:
-            return subprocess.Popen(cmd)  # noqa: S603
+            return subprocess.Popen(cmd, env=env)  # noqa: S603
         except OSError as exc:
             raise BrowseError(f"Failed to launch Chromium at {self._chromium_path}: {exc}") from exc
 

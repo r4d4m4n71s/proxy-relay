@@ -3,6 +3,12 @@
 Provides functions to write/read PID files, check whether a process is
 running, send signals to a running daemon, and persist server status as
 JSON for the ``status`` CLI subcommand.
+
+Each proxy-relay instance is identified by its proxy-st profile name.
+PID and status files are scoped per profile:
+
+    ``~/.config/proxy-relay/{profile}.pid``
+    ``~/.config/proxy-relay/{profile}.status.json``
 """
 from __future__ import annotations
 
@@ -17,8 +23,36 @@ from proxy_relay.logger import get_logger
 
 log = get_logger(__name__)
 
+# Legacy single-instance paths (kept for backward compatibility in tests).
 PID_PATH: Path = CONFIG_DIR / "proxy-relay.pid"
 STATUS_PATH: Path = CONFIG_DIR / "status.json"
+
+# Default profile name when none is specified.
+_DEFAULT_PROFILE: str = "browse"
+
+
+def pid_path_for(profile: str) -> Path:
+    """Return the PID file path for a given profile.
+
+    Args:
+        profile: proxy-st profile name.
+
+    Returns:
+        Path to ``~/.config/proxy-relay/{profile}.pid``.
+    """
+    return CONFIG_DIR / f"{profile}.pid"
+
+
+def status_path_for(profile: str) -> Path:
+    """Return the status file path for a given profile.
+
+    Args:
+        profile: proxy-st profile name.
+
+    Returns:
+        Path to ``~/.config/proxy-relay/{profile}.status.json``.
+    """
+    return CONFIG_DIR / f"{profile}.status.json"
 
 
 # ------------------------------------------------------------------
@@ -137,6 +171,7 @@ def write_status(
     country: str,
     active_connections: int,
     total_connections: int,
+    profile: str = "",
     stats: dict[str, Any] | None = None,
     path: Path = STATUS_PATH,
 ) -> None:
@@ -152,6 +187,7 @@ def write_status(
         country: Upstream exit country code.
         active_connections: Current active connection count.
         total_connections: Lifetime connection count.
+        profile: proxy-st profile name the server is using.
         stats: Optional monitor stats dict to include.
         path: Destination path for the status file.
     """
@@ -160,6 +196,7 @@ def write_status(
         "port": port,
         "upstream_url": upstream_url,
         "country": country,
+        "profile": profile,
         "active_connections": active_connections,
         "total_connections": total_connections,
     }

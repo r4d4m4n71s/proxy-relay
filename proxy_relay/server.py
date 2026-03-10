@@ -10,10 +10,17 @@ from proxy_relay.config import MonitorConfig
 from proxy_relay.handler import handle_connection
 from proxy_relay.logger import get_logger
 from proxy_relay.monitor import ConnectionMonitor, MonitorStats
-from proxy_relay.pidfile import remove_pid, write_pid, write_status
+from proxy_relay.pidfile import pid_path_for, remove_pid, status_path_for, write_pid, write_status
+from proxy_relay.tunnel import open_tunnel
 from proxy_relay.upstream import UpstreamInfo, UpstreamManager
 
 log = get_logger(__name__)
+
+# Health check target — plain HTTP endpoint that returns the caller's IP.
+_HEALTH_TARGET_HOST: str = "icanhazip.com"
+_HEALTH_TARGET_PORT: int = 80
+_HEALTH_MAX_RETRIES: int = 3
+_HEALTH_READ_TIMEOUT: float = 15.0
 
 
 class ProxyServer:
@@ -37,11 +44,15 @@ class ProxyServer:
         port: int = 8080,
         upstream_manager: UpstreamManager | None = None,
         monitor_config: MonitorConfig | None = None,
+        profile_name: str = "browse",
     ) -> None:
         self._host = host
         self._port = port
         self._upstream_manager = upstream_manager
         self._monitor_config = monitor_config
+        self._profile_name = profile_name
+        self._pid_path = pid_path_for(profile_name)
+        self._status_path = status_path_for(profile_name)
         self._server: asyncio.Server | None = None
         self._upstream: UpstreamInfo | None = None
         self._monitor: ConnectionMonitor | None = None
@@ -95,8 +106,15 @@ class ProxyServer:
             port=self._port,
         )
 
-        # Write PID file
-        write_pid()
+        # Capture actual port when OS-assigned (port=0)
+        if self._port == 0 and self._server.sockets:
+            self._port = self._server.sockets[0].getsockname()[1]
+
+        # Write PID file (profile-scoped)
+        write_pid(self._pid_path)
+
+        # Write initial status so browse can discover host:port
+        self._update_status_file()
 
         # Install signal handlers for graceful shutdown
         loop = asyncio.get_running_loop()
@@ -135,7 +153,11 @@ class ProxyServer:
         Closes the listening socket, removes the PID file, and waits
         for active connections to finish.
         """
-        remove_pid()
+        remove_pid(self._pid_path)
+        try:
+            self._status_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
@@ -171,6 +193,71 @@ class ProxyServer:
         except Exception as exc:
             log.error("Upstream rotation failed: %s", exc)
 
+    async def health_check(self) -> tuple[bool, str]:
+        """Check upstream connectivity, rotating on failure.
+
+        Opens a SOCKS5 tunnel to icanhazip.com and reads the exit IP.
+        On failure, rotates the upstream and retries up to
+        ``_HEALTH_MAX_RETRIES`` times.  All rotation logic stays inside the
+        server — callers just get back (ok, message).
+
+        Returns:
+            Tuple of (success, body) where body is the exit IP on success
+            or an error description on failure.
+        """
+        if self._upstream is None:
+            return False, "server not started"
+
+        last_error = ""
+        for attempt in range(1, _HEALTH_MAX_RETRIES + 1):
+            assert self._upstream is not None
+            try:
+                result = await asyncio.wait_for(
+                    open_tunnel(
+                        _HEALTH_TARGET_HOST,
+                        _HEALTH_TARGET_PORT,
+                        self._upstream,
+                    ),
+                    timeout=_HEALTH_READ_TIMEOUT,
+                )
+                # Send a minimal HTTP request through the tunnel
+                request = (
+                    f"GET / HTTP/1.1\r\n"
+                    f"Host: {_HEALTH_TARGET_HOST}\r\n"
+                    f"Connection: close\r\n"
+                    f"\r\n"
+                )
+                result.writer.write(request.encode("latin-1"))
+                await result.writer.drain()
+
+                raw = await asyncio.wait_for(
+                    result.reader.read(4096),
+                    timeout=_HEALTH_READ_TIMEOUT,
+                )
+                result.writer.close()
+
+                # Parse the HTTP response body (after headers)
+                text = raw.decode("utf-8", errors="replace")
+                if "\r\n\r\n" in text:
+                    body = text.split("\r\n\r\n", 1)[1].strip()
+                else:
+                    body = text.strip()
+
+                log.info("Health check OK (attempt %d/%d): exit IP %s", attempt, _HEALTH_MAX_RETRIES, body)
+                return True, body
+
+            except Exception as exc:
+                last_error = str(exc)
+                log.warning(
+                    "Health check failed (attempt %d/%d): %s",
+                    attempt, _HEALTH_MAX_RETRIES, last_error,
+                )
+                if attempt < _HEALTH_MAX_RETRIES:
+                    log.info("Rotating upstream before retry...")
+                    await self._do_rotate()
+
+        return False, f"health check failed after {_HEALTH_MAX_RETRIES} attempts: {last_error}"
+
     def _update_status_file(self) -> None:
         """Write current server status to the status JSON file."""
         if self._upstream is None:
@@ -180,14 +267,20 @@ class ProxyServer:
         if self._monitor is not None:
             stats_dict = asdict(self._monitor.get_stats())
 
+        profile = ""
+        if self._upstream_manager is not None:
+            profile = self._upstream_manager.profile_name
+
         write_status(
             host=self._host,
             port=self._port,
             upstream_url=self._upstream.url,
             country=self._upstream.country,
+            profile=profile,
             active_connections=self._active_connections,
             total_connections=self._total_connections,
             stats=stats_dict,
+            path=self._status_path,
         )
 
     @property
@@ -221,7 +314,11 @@ class ProxyServer:
         )
 
         try:
-            await handle_connection(reader, writer, self._upstream, monitor=self._monitor)
+            await handle_connection(
+                reader, writer, self._upstream,
+                monitor=self._monitor,
+                health_callback=self.health_check,
+            )
         finally:
             self._active_connections -= 1
             log.debug(
@@ -279,6 +376,7 @@ async def run_server(
         port=port,
         upstream_manager=manager,
         monitor_config=monitor_config,
+        profile_name=profile_name,
     )
 
     await server.start()

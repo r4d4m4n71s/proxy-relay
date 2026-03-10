@@ -32,7 +32,8 @@ class TestProxyServer:
 
         with patch("asyncio.start_server", new_callable=AsyncMock) as mock_start, \
              patch("proxy_relay.server.write_pid"), \
-             patch("proxy_relay.server.remove_pid"):
+             patch("proxy_relay.server.remove_pid"), \
+             patch("proxy_relay.server.write_status"):
             mock_srv = AsyncMock()
             mock_srv.sockets = [MagicMock()]
             mock_srv.sockets[0].getsockname.return_value = ("127.0.0.1", 18080)
@@ -49,14 +50,18 @@ class TestProxyServer:
             assert "127.0.0.1" in str(call_kwargs)
 
     @pytest.mark.asyncio
-    async def test_server_stop_closes_cleanly(self):
+    async def test_server_stop_closes_cleanly(self, tmp_path):
         """Server stop closes the underlying asyncio server."""
         mgr = self._make_manager()
         server = ProxyServer(host="127.0.0.1", port=18081, upstream_manager=mgr)
+        # Point status path to a temp file to avoid unlink issues
+        server._status_path = tmp_path / "test.status.json"
+        server._pid_path = tmp_path / "test.pid"
 
         with patch("asyncio.start_server", new_callable=AsyncMock) as mock_start, \
              patch("proxy_relay.server.write_pid"), \
-             patch("proxy_relay.server.remove_pid"):
+             patch("proxy_relay.server.remove_pid"), \
+             patch("proxy_relay.server.write_status"):
             mock_srv = AsyncMock()
             mock_srv.sockets = [MagicMock()]
             mock_srv.sockets[0].getsockname.return_value = ("127.0.0.1", 18081)
@@ -154,7 +159,8 @@ class TestProxyServerMonitorConfig:
 
         with patch("asyncio.start_server", new_callable=AsyncMock) as mock_start, \
              patch("proxy_relay.server.write_pid"), \
-             patch("proxy_relay.server.remove_pid"):
+             patch("proxy_relay.server.remove_pid"), \
+             patch("proxy_relay.server.write_status"):
             mock_srv = AsyncMock()
             mock_srv.sockets = [MagicMock()]
             mock_srv.sockets[0].getsockname.return_value = ("127.0.0.1", 18082)

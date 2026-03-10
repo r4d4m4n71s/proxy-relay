@@ -32,7 +32,7 @@ port = 8080
 [monitor]
 # enabled = true
 # slow_threshold_ms = 2000.0
-# error_threshold_count = 5
+# error_threshold_count = 2
 # window_size = 100
 
 [anti_leak]
@@ -57,7 +57,7 @@ class MonitorConfig:
 
     enabled: bool = True
     slow_threshold_ms: float = 2000.0
-    error_threshold_count: int = 5
+    error_threshold_count: int = 2
     window_size: int = 100
 
 
@@ -200,7 +200,7 @@ def _parse_config(data: dict) -> RelayConfig:
         raise ConfigError(
             f"monitor.slow_threshold_ms must be a positive number, got: {slow_threshold!r}"
         )
-    error_count = monitor_data.get("error_threshold_count", 5)
+    error_count = monitor_data.get("error_threshold_count", 2)
     if not isinstance(error_count, int) or error_count < 0:
         raise ConfigError(
             f"monitor.error_threshold_count must be a non-negative integer, got: {error_count!r}"

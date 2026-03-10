@@ -137,7 +137,7 @@ class TestMonitorConfig:
 
         mc = MonitorConfig()
         assert mc.slow_threshold_ms == 2000.0
-        assert mc.error_threshold_count == 5
+        assert mc.error_threshold_count == 2
         assert mc.enabled is True
 
     def test_window_size_default(self):

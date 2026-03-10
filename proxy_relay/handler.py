@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 
 from proxy_relay.exceptions import TunnelError
 from proxy_relay.forwarder import forward_http_request
@@ -25,11 +26,16 @@ _MAX_HEADER_SIZE: int = 65536
 _REQUEST_TIMEOUT: float = 30.0
 
 
+# Internal health endpoint path.
+HEALTH_PATH: str = "/__health"
+
+
 async def handle_connection(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
     upstream: UpstreamInfo,
     monitor: ConnectionMonitor | None = None,
+    health_callback: Callable[[], Awaitable[tuple[bool, str]]] | None = None,
 ) -> None:
     """Handle a single client connection to the proxy.
 
@@ -41,6 +47,9 @@ async def handle_connection(
         client_writer: Writer to the connected client.
         upstream: Upstream SOCKS5 connection parameters.
         monitor: Optional connection quality monitor for recording outcomes.
+        health_callback: Optional async callback for the internal health
+            endpoint.  When provided and the request is ``GET /__health``,
+            the callback is invoked instead of forwarding through SOCKS5.
     """
     peer = client_writer.get_extra_info("peername")
     peer_str = f"{peer[0]}:{peer[1]}" if peer else "unknown"
@@ -55,7 +64,9 @@ async def handle_connection(
             timeout=_REQUEST_TIMEOUT,
         )
 
-        if method == "CONNECT":
+        if method != "CONNECT" and target.endswith(HEALTH_PATH) and health_callback is not None:
+            await _handle_health(client_writer, health_callback)
+        elif method == "CONNECT":
             await _handle_connect(
                 target,
                 upstream,
@@ -300,6 +311,43 @@ def _parse_connect_target(target: str) -> tuple[str, int]:
         raise TunnelError(f"Port out of range in CONNECT target: {target!r}")
 
     return host, port
+
+
+async def _handle_health(
+    client_writer: asyncio.StreamWriter,
+    health_callback: Callable[[], Awaitable[tuple[bool, str]]],
+) -> None:
+    """Handle an internal health check request.
+
+    Invokes the server's health callback (which may rotate the upstream
+    on failure) and returns a JSON response to the client.
+
+    Args:
+        client_writer: Writer to send the response back to the client.
+        health_callback: Async callable returning (ok, body).
+    """
+    import json
+
+    log.debug("Handling internal health check request")
+
+    ok, body = await health_callback()
+    status = 200 if ok else 503
+    reason = "OK" if ok else "Service Unavailable"
+    payload = json.dumps({"ok": ok, "exit_ip" if ok else "error": body})
+
+    response = (
+        f"HTTP/1.1 {status} {reason}\r\n"
+        f"Content-Type: application/json\r\n"
+        f"Content-Length: {len(payload)}\r\n"
+        f"Connection: close\r\n"
+        f"\r\n"
+        f"{payload}"
+    )
+    try:
+        client_writer.write(response.encode("latin-1"))
+        await client_writer.drain()
+    except OSError:
+        pass
 
 
 async def _send_error(

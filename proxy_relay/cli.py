@@ -13,9 +13,18 @@ from proxy_relay.config import MonitorConfig, RelayConfig
 from proxy_relay import browse as _browse
 from proxy_relay.exceptions import BrowseError, ConfigError, ProxyRelayError, UpstreamError
 from proxy_relay.logger import configure_logging, get_logger
-from proxy_relay.pidfile import is_process_running, read_pid, read_status, send_signal
+from proxy_relay.pidfile import (
+    PID_PATH,
+    is_process_running,
+    pid_path_for,
+    read_pid,
+    read_status,
+    remove_pid,
+    send_signal,
+    status_path_for,
+)
 from proxy_relay.server import ProxyServer
-from proxy_relay.tz import check_timezone_mismatch
+from proxy_relay.tz import check_timezone_mismatch, get_timezone_for_country
 from proxy_relay.upstream import UpstreamManager
 
 log = get_logger(__name__)
@@ -77,9 +86,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # stop subcommand
-    subparsers.add_parser(
+    stop_parser = subparsers.add_parser(
         "stop",
         help="Stop the running proxy relay server",
+    )
+    stop_parser.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help="proxy-st profile name (default: 'browse')",
     )
 
     # status subcommand
@@ -93,11 +108,23 @@ def build_parser() -> argparse.ArgumentParser:
         dest="json_output",
         help="Output status as JSON",
     )
+    status_parser.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help="proxy-st profile name (default: 'browse')",
+    )
 
     # rotate subcommand
-    subparsers.add_parser(
+    rotate_parser = subparsers.add_parser(
         "rotate",
         help="Trigger upstream proxy rotation (sends SIGUSR1)",
+    )
+    rotate_parser.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help="proxy-st profile name (default: 'browse')",
     )
 
     # browse subcommand
@@ -110,6 +137,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Auto-rotate interval in minutes (default: from config or 30)",
+    )
+    browse_parser.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help="proxy-st profile name (overrides config, selects browser workspace)",
     )
     browse_parser.add_argument(
         "--no-rotate",
@@ -136,12 +169,6 @@ def _cmd_start(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success, non-zero for error).
     """
-    # Check for existing instance
-    pid = read_pid()
-    if pid is not None and is_process_running(pid):
-        print(f"proxy-relay is already running (PID {pid})", file=sys.stderr)
-        return 1
-
     # Load configuration
     config_path = Path(args.config) if args.config else None
     try:
@@ -150,13 +177,22 @@ def _cmd_start(args: argparse.Namespace) -> int:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
 
-    # CLI overrides
+    # CLI overrides (use `is None` checks — 0 is a valid port)
     log_level = args.log_level or config.log_level
     configure_logging(log_level)
 
-    host = args.host or config.server.host
-    port = args.port or config.server.port
+    host = config.server.host if args.host is None else args.host
+    port = config.server.port if args.port is None else args.port
     profile_name = args.profile or config.proxy_st_profile
+
+    # Check for existing instance of this profile
+    pid = read_pid(pid_path_for(profile_name))
+    if pid is not None and is_process_running(pid):
+        print(
+            f"proxy-relay is already running for profile {profile_name!r} (PID {pid})",
+            file=sys.stderr,
+        )
+        return 1
 
     log.info("proxy-relay %s starting", __version__)
     log.info("Config: bind=%s:%d, profile=%s", host, port, profile_name)
@@ -204,6 +240,7 @@ async def _run(
         port=port,
         upstream_manager=manager,
         monitor_config=monitor_config,
+        profile_name=profile_name,
     )
 
     await server.start()
@@ -221,20 +258,36 @@ def _cmd_stop(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success, non-zero for error).
     """
-    pid = read_pid()
+    profile = args.profile or "browse"
+    pid_path = pid_path_for(profile)
+
+    pid = read_pid(pid_path)
     if pid is None:
-        print("proxy-relay is not running (no PID file found)", file=sys.stderr)
+        # Legacy fallback: check old proxy-relay.pid
+        legacy_pid = read_pid(PID_PATH)
+        if legacy_pid is not None:
+            print(
+                f"WARNING: Legacy PID file found at {PID_PATH}. "
+                f"Use 'kill {legacy_pid}' to stop the old instance, "
+                f"then delete {PID_PATH}.",
+                file=sys.stderr,
+            )
+        print(
+            f"proxy-relay is not running for profile {profile!r} (no PID file found)",
+            file=sys.stderr,
+        )
         return 1
 
     if not is_process_running(pid):
-        print(f"proxy-relay is not running (stale PID {pid})", file=sys.stderr)
-        # Clean up stale PID file
-        from proxy_relay.pidfile import remove_pid
-        remove_pid()
+        print(
+            f"proxy-relay is not running for profile {profile!r} (stale PID {pid})",
+            file=sys.stderr,
+        )
+        remove_pid(pid_path)
         return 1
 
     if send_signal(pid, signal.SIGTERM):
-        print(f"Sent SIGTERM to proxy-relay (PID {pid})")
+        print(f"Sent SIGTERM to proxy-relay (PID {pid}, profile {profile!r})")
         return 0
 
     print(f"Failed to send SIGTERM to PID {pid}", file=sys.stderr)
@@ -252,14 +305,16 @@ def _cmd_status(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success, non-zero for error).
     """
-    pid = read_pid()
+    profile = args.profile or "browse"
+    pid = read_pid(pid_path_for(profile))
     running = pid is not None and is_process_running(pid)
-    status_data = read_status()
+    status_data = read_status(status_path_for(profile))
 
     if args.json_output:
         output: dict = {
             "running": running,
             "pid": pid,
+            "profile": profile,
         }
         if status_data is not None:
             output.update(status_data)
@@ -271,10 +326,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
         state = "not running"
         if pid is not None:
             state = f"not running (stale PID {pid})"
-        print(f"proxy-relay: {state}")
+        print(f"proxy-relay [{profile}]: {state}")
         return 1
 
-    print(f"proxy-relay: running (PID {pid})")
+    print(f"proxy-relay [{profile}]: running (PID {pid})")
 
     if status_data is not None:
         host = status_data.get("host", "?")
@@ -314,17 +369,24 @@ def _cmd_rotate(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success, non-zero for error).
     """
-    pid = read_pid()
+    profile = args.profile or "browse"
+    pid = read_pid(pid_path_for(profile))
     if pid is None:
-        print("proxy-relay is not running (no PID file found)", file=sys.stderr)
+        print(
+            f"proxy-relay is not running for profile {profile!r} (no PID file found)",
+            file=sys.stderr,
+        )
         return 1
 
     if not is_process_running(pid):
-        print(f"proxy-relay is not running (stale PID {pid})", file=sys.stderr)
+        print(
+            f"proxy-relay is not running for profile {profile!r} (stale PID {pid})",
+            file=sys.stderr,
+        )
         return 1
 
     if send_signal(pid, signal.SIGUSR1):
-        print(f"Sent SIGUSR1 to proxy-relay (PID {pid}) — rotation triggered")
+        print(f"Sent SIGUSR1 to proxy-relay (PID {pid}, profile {profile!r}) — rotation triggered")
         return 0
 
     print(f"Failed to send SIGUSR1 to PID {pid}", file=sys.stderr)
@@ -332,10 +394,10 @@ def _cmd_rotate(args: argparse.Namespace) -> int:
 
 
 def _cmd_browse(args: argparse.Namespace) -> int:
-    """Execute the 'browse' subcommand.
+    """Execute the 'browse' subcommand with auto-start/stop lifecycle.
 
-    Launches Chromium through the running proxy relay, with optional
-    auto-rotation of the upstream proxy.
+    If no server is running for the requested profile, one is auto-started
+    on an OS-assigned port and stopped when the browser exits.
 
     Args:
         args: Parsed command-line arguments.
@@ -343,13 +405,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success, non-zero for error).
     """
-    # 1. Check PID + liveness
-    pid = read_pid()
-    if pid is None or not is_process_running(pid):
-        print("proxy-relay is not running — start it first with: proxy-relay start", file=sys.stderr)
-        return 1
-
-    # 2. Load config
+    # 1. Load config
     config_path = Path(args.config) if args.config else None
     try:
         config = RelayConfig.load(config_path)
@@ -357,59 +413,106 @@ def _cmd_browse(args: argparse.Namespace) -> int:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
 
-    # 3. Read status.json for actual host/port, falling back to config
-    status_data = read_status()
-    if status_data is not None:
-        host = status_data.get("host", config.server.host)
-        port = status_data.get("port", config.server.port)
-    else:
-        host = config.server.host
-        port = config.server.port
+    profile_name = args.profile or config.proxy_st_profile
+    log_level = config.log_level
 
-    # 4. Health check
+    # 2. Check if a server is already running for this profile
+    auto_started = False
+    server_proc = None
+    pid = read_pid(pid_path_for(profile_name))
+
+    if pid is not None and is_process_running(pid):
+        # Server already running — reuse it
+        status_data = read_status(status_path_for(profile_name))
+        if status_data is not None:
+            host = status_data.get("host", config.server.host)
+            port = status_data.get("port", config.server.port)
+        else:
+            host = config.server.host
+            port = config.server.port
+        relay_pid = pid
+        print(f"Using existing server for profile {profile_name!r} (PID {pid})")
+    else:
+        # No server running — auto-start one
+        auto_started = True
+        print(f"Starting server for profile {profile_name!r}...")
+        try:
+            server_proc = _browse.auto_start_server(
+                profile_name,
+                host=config.server.host,
+                config_path=Path(args.config) if args.config else None,
+                log_level=log_level,
+            )
+            host, port = _browse.wait_for_server_ready(profile_name, server_proc)
+            relay_pid = server_proc.pid
+            print(f"Server started (PID {relay_pid}, port {port})")
+        except BrowseError as exc:
+            print(f"Failed to start server: {exc}", file=sys.stderr)
+            return 1
+
+        # Read status for country info
+        status_data = read_status(status_path_for(profile_name))
+
     try:
-        exit_ip = _browse.health_check(host, port)
-        print(f"Proxy chain verified — exit IP: {exit_ip}")
-    except BrowseError as exc:
-        print(f"Health check failed: {exc}", file=sys.stderr)
-        return 1
+        # 3. Health check
+        try:
+            exit_ip = _browse.health_check(host, port)
+            print(f"Proxy chain verified — exit IP: {exit_ip}")
+        except BrowseError as exc:
+            print(f"Health check failed: {exc}", file=sys.stderr)
+            return 1
 
-    # 5. Find Chromium
-    try:
-        chromium_path = _browse.find_chromium()
-        log.info("Found Chromium at %s", chromium_path)
-    except BrowseError as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
+        # 4. Find Chromium
+        try:
+            chromium_path = _browse.find_chromium()
+            log.info("Found Chromium at %s", chromium_path)
+        except BrowseError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
 
-    # 6. Determine profile dir
-    profile_dir = _browse.get_profile_dir(config.proxy_st_profile)
+        # 5. Profile dir and timezone
+        profile_dir = _browse.get_profile_dir(profile_name, chromium_path=chromium_path)
 
-    # 7. Resolve rotation interval
-    if args.no_rotate:
-        rotate_min = 0
-    elif args.rotate_min is not None:
-        rotate_min = args.rotate_min
-    else:
-        rotate_min = config.browse.rotate_interval_min
+        country = status_data.get("country", "") if status_data else ""
+        proxy_tz: str | None = None
+        if country:
+            proxy_tz = get_timezone_for_country(country)
+            if proxy_tz:
+                print(f"Timezone spoofing: TZ={proxy_tz} (country: {country.upper()})")
+            else:
+                log.warning("No timezone mapping for country %r — using system timezone", country)
 
-    # 8. Create supervisor and run
-    supervisor = _browse.BrowseSupervisor(
-        chromium_path=chromium_path,
-        proxy_host=host,
-        proxy_port=port,
-        profile_dir=profile_dir,
-        relay_pid=pid,
-        rotate_interval_min=rotate_min,
-    )
+        # 6. Resolve rotation interval
+        if args.no_rotate:
+            rotate_min = 0
+        elif args.rotate_min is not None:
+            rotate_min = args.rotate_min
+        else:
+            rotate_min = config.browse.rotate_interval_min
 
-    if rotate_min > 0:
-        print(f"Auto-rotation enabled: every {rotate_min} minutes")
-    else:
-        print("Auto-rotation disabled")
+        # 7. Create supervisor and run
+        supervisor = _browse.BrowseSupervisor(
+            chromium_path=chromium_path,
+            proxy_host=host,
+            proxy_port=port,
+            profile_dir=profile_dir,
+            relay_pid=relay_pid,
+            rotate_interval_min=rotate_min,
+            timezone=proxy_tz,
+        )
 
-    print(f"Launching Chromium (profile: {config.proxy_st_profile})...")
-    return supervisor.run()
+        if rotate_min > 0:
+            print(f"Auto-rotation enabled: every {rotate_min} minutes")
+        else:
+            print("Auto-rotation disabled")
+
+        print(f"Launching Chromium (profile: {profile_name})...")
+        return supervisor.run()
+
+    finally:
+        # 8. Auto-stop server if we started it
+        if auto_started and server_proc is not None:
+            _browse.auto_stop_server(server_proc, profile_name)
 
 
 def main() -> None:

@@ -60,6 +60,75 @@ _COUNTRY_UTC_OFFSETS: dict[str, tuple[float, float]] = {
     "be": (1.0, 2.0),
 }
 
+# Mapping of ISO alpha-2 country codes to representative IANA timezone names.
+# Used to set the TZ environment variable on the Chromium subprocess so that
+# JavaScript Intl.DateTimeFormat() reports a timezone consistent with the
+# proxy exit IP.  For multi-timezone countries, the capital/most-populated
+# zone is chosen.
+_COUNTRY_TIMEZONES: dict[str, str] = {
+    "us": "America/New_York",
+    "ca": "America/Toronto",
+    "gb": "Europe/London",
+    "de": "Europe/Berlin",
+    "fr": "Europe/Paris",
+    "nl": "Europe/Amsterdam",
+    "es": "Europe/Madrid",
+    "it": "Europe/Rome",
+    "se": "Europe/Stockholm",
+    "no": "Europe/Oslo",
+    "dk": "Europe/Copenhagen",
+    "fi": "Europe/Helsinki",
+    "pl": "Europe/Warsaw",
+    "br": "America/Sao_Paulo",
+    "ar": "America/Argentina/Buenos_Aires",
+    "co": "America/Bogota",
+    "mx": "America/Mexico_City",
+    "cl": "America/Santiago",
+    "au": "Australia/Sydney",
+    "nz": "Pacific/Auckland",
+    "jp": "Asia/Tokyo",
+    "kr": "Asia/Seoul",
+    "in": "Asia/Kolkata",
+    "sg": "Asia/Singapore",
+    "za": "Africa/Johannesburg",
+    "il": "Asia/Jerusalem",
+    "ae": "Asia/Dubai",
+    "ru": "Europe/Moscow",
+    "cn": "Asia/Shanghai",
+    "hk": "Asia/Hong_Kong",
+    "tw": "Asia/Taipei",
+    "th": "Asia/Bangkok",
+    "my": "Asia/Kuala_Lumpur",
+    "id": "Asia/Jakarta",
+    "ph": "Asia/Manila",
+    "pt": "Europe/Lisbon",
+    "ie": "Europe/Dublin",
+    "at": "Europe/Vienna",
+    "ch": "Europe/Zurich",
+    "be": "Europe/Brussels",
+}
+
+
+def get_timezone_for_country(country_code: str) -> str | None:
+    """Return a representative IANA timezone for a country code.
+
+    Used by the ``browse`` command to set the ``TZ`` environment variable
+    on the Chromium subprocess, preventing JavaScript timezone fingerprinting.
+
+    Args:
+        country_code: ISO alpha-2 country code (case-insensitive).
+
+    Returns:
+        IANA timezone string (e.g., ``"Europe/Berlin"``), or None if the
+        country is not in the lookup table.
+    """
+    tz = _COUNTRY_TIMEZONES.get(country_code.lower())
+    if tz is not None:
+        log.debug("Resolved timezone for %s: %s", country_code.upper(), tz)
+    else:
+        log.debug("No timezone mapping for country %r", country_code)
+    return tz
+
 
 def get_local_utc_offset_hours() -> float:
     """Return the local system's current UTC offset in hours.

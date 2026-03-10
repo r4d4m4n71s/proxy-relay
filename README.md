@@ -98,6 +98,7 @@ rotate_interval_min = 30  # auto-rotate every N minutes (0 = disabled)
 |------|-------------|
 | `--rotate-min N` | Auto-rotate interval in minutes (default: from config or 30) |
 | `--no-rotate` | Disable auto-rotation entirely |
+| `--profile NAME` | Override proxy-st profile (also selects the browser workspace) |
 | `--config` | Path to config file |
 
 ## Browse Command
@@ -132,7 +133,7 @@ proxy-relay browse --config /path/to/config.toml
 ### What happens on launch
 
 1. **PID check** — verifies proxy-relay is running (reads PID file).
-2. **Health check** — sends a request through the full proxy chain (relay -> SOCKS5 -> internet) to confirm connectivity. Prints the exit IP on success.
+2. **Health check** — calls the server's internal `/__health` endpoint. The server verifies upstream connectivity through the SOCKS5 tunnel, automatically rotating and retrying (up to 3 attempts) if the upstream is unreachable. Prints the exit IP on success.
 3. **Chromium discovery** — locates a Chromium or Chrome binary. Checks `/snap/bin/chromium` first, then `chromium`, `chromium-browser`, and `google-chrome` on PATH.
 4. **Profile isolation** — creates (or reuses) a dedicated browser profile at `~/.config/proxy-relay/browser-profiles/{profile}/`. Each proxy-st profile gets its own directory with separate cookies, cache, history, and extensions — fully isolated from the user's normal browser and from other proxy profiles.
 5. **Browser launch** — starts Chromium with `--proxy-server`, `--user-data-dir`, `--start-maximized`, `--no-first-run`, `--disable-default-apps`, `--disable-sync`.
@@ -161,7 +162,7 @@ The rotation interval is resolved in this priority order:
 | Error | Message | Solution |
 |-------|---------|----------|
 | Proxy not running | `proxy-relay is not running — start it first with: proxy-relay start` | Run `proxy-relay start` first |
-| Health check fails | `Health check failed: <details>` | Check that proxy-relay and the upstream SOCKS5 proxy are working |
+| Health check fails | `Health check failed: <details>` | The server already tried rotating 3 times. Check that the upstream SOCKS5 provider is reachable, or try a different profile/country. |
 | Chromium not found | `Chromium not found. Install chromium or google-chrome and ensure it is on PATH.` | Install Chromium: `sudo snap install chromium` or `sudo apt install chromium-browser` |
 | Config error | `Configuration error: <details>` | Fix the TOML config file |
 
@@ -170,7 +171,10 @@ The rotation interval is resolved in this priority order:
 ```
 proxy-relay browse                    proxy-relay start
       |                                      |
-      |── Health check ──────────────────>   |
+      |── GET /__health ─────────────────>   |── try SOCKS5 tunnel
+      |                                      |   ├─ ok → return exit IP
+      |                                      |   └─ fail → rotate → retry (×3)
+      |<── {"ok":true,"exit_ip":"x.x.x.x"} ─|
       |── Find Chromium                      |
       |── Create profile dir                 |
       |                                      |
