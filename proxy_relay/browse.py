@@ -100,11 +100,13 @@ def health_check(proxy_host: str, proxy_port: int) -> str:
             error_msg = data.get("error", str(exc))
         except Exception:
             error_msg = f"HTTP {exc.code}: {exc.reason}"
-        raise BrowseError(f"Health check failed: {error_msg}") from exc
+        raise BrowseError(error_msg) from exc
     except urllib.error.URLError as exc:
-        raise BrowseError(f"Health check failed — server unreachable: {exc.reason}") from exc
+        raise BrowseError(
+            f"proxy-relay server unreachable at {health_url}: {exc.reason}"
+        ) from exc
     except (OSError, TimeoutError) as exc:
-        raise BrowseError(f"Health check failed: {exc}") from exc
+        raise BrowseError(f"proxy-relay health endpoint error: {exc}") from exc
 
 
 def _is_snap_chromium(chromium_path: Path) -> bool:

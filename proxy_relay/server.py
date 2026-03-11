@@ -256,7 +256,40 @@ class ProxyServer:
                     log.info("Rotating upstream before retry...")
                     await self._do_rotate()
 
-        return False, f"health check failed after {_HEALTH_MAX_RETRIES} attempts: {last_error}"
+        # Build a descriptive error with upstream context and actionable hints.
+        profile = self._profile_name
+        country = self._upstream.country or "any"
+        upstream_url = self._upstream.url
+
+        hint_parts: list[str] = []
+        low = last_error.lower()
+        if "host unreachable" in low or "connection refused" in low:
+            hint_parts.append(
+                "the upstream proxy accepted the connection but the exit node "
+                "could not reach the target — the residential IP pool for this "
+                "region may be exhausted or the city targeting too narrow"
+            )
+            hint_parts.append("try: proxy-st rotate --profile %s" % profile)
+            hint_parts.append(
+                "if rotation keeps failing, remove the 'city' setting from "
+                "the profile in ~/.config/proxy-st/config.toml"
+            )
+        elif "timed out" in low:
+            hint_parts.append(
+                "the upstream proxy did not respond in time — the provider "
+                "may be experiencing an outage or the region is overloaded"
+            )
+            hint_parts.append("try: proxy-st check --profile %s" % profile)
+
+        lines = [
+            f"upstream unreachable after {_HEALTH_MAX_RETRIES} attempts "
+            f"(profile={profile!r}, country={country}, upstream={upstream_url})",
+            f"last error: {last_error}",
+        ]
+        if hint_parts:
+            lines.append("hint: " + "; ".join(hint_parts))
+
+        return False, "\n  ".join(lines)
 
     def _update_status_file(self) -> None:
         """Write current server status to the status JSON file."""

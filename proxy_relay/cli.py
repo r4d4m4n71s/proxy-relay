@@ -459,7 +459,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
             exit_ip = _browse.health_check(host, port)
             print(f"Proxy chain verified — exit IP: {exit_ip}")
         except BrowseError as exc:
-            print(f"Health check failed: {exc}", file=sys.stderr)
+            print(f"\nHealth check failed:\n  {exc}\n", file=sys.stderr)
             return 1
 
         # 4. Find Chromium
