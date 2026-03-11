@@ -264,6 +264,56 @@ class TestGetProfileDir:
             result = get_profile_dir("browse", chromium_path=None)
             assert result == tmp_path / "browse"
 
+    def test_snap_cleans_empty_ghost_dir(self, tmp_path: Path):
+        from proxy_relay.browse import get_profile_dir
+
+        default_dir = tmp_path / "default-profiles"
+        snap_dir = tmp_path / "snap-profiles"
+        # Create empty ghost directory
+        ghost = default_dir / "browse"
+        ghost.mkdir(parents=True)
+
+        with (
+            patch("proxy_relay.browse.BROWSER_PROFILES_DIR", default_dir),
+            patch("proxy_relay.browse._SNAP_PROFILES_DIR", snap_dir),
+        ):
+            result = get_profile_dir("browse", chromium_path=Path("/snap/bin/chromium"))
+            assert result == snap_dir / "browse"
+            assert not ghost.exists(), "empty ghost dir should be removed"
+
+    def test_snap_keeps_non_empty_ghost_dir(self, tmp_path: Path):
+        from proxy_relay.browse import get_profile_dir
+
+        default_dir = tmp_path / "default-profiles"
+        snap_dir = tmp_path / "snap-profiles"
+        # Create ghost directory with content
+        ghost = default_dir / "browse"
+        ghost.mkdir(parents=True)
+        (ghost / "some-file.txt").write_text("data")
+
+        with (
+            patch("proxy_relay.browse.BROWSER_PROFILES_DIR", default_dir),
+            patch("proxy_relay.browse._SNAP_PROFILES_DIR", snap_dir),
+        ):
+            result = get_profile_dir("browse", chromium_path=Path("/snap/bin/chromium"))
+            assert result == snap_dir / "browse"
+            assert ghost.exists(), "non-empty ghost dir should be preserved"
+
+    def test_snap_removes_empty_parent_after_last_ghost(self, tmp_path: Path):
+        from proxy_relay.browse import get_profile_dir
+
+        default_dir = tmp_path / "default-profiles"
+        snap_dir = tmp_path / "snap-profiles"
+        # Only one empty ghost profile
+        (default_dir / "browse").mkdir(parents=True)
+
+        with (
+            patch("proxy_relay.browse.BROWSER_PROFILES_DIR", default_dir),
+            patch("proxy_relay.browse._SNAP_PROFILES_DIR", snap_dir),
+        ):
+            get_profile_dir("browse", chromium_path=Path("/snap/bin/chromium"))
+            assert not default_dir.exists(), "empty parent should be removed"
+
 
 # ---------------------------------------------------------------------------
 # 5b. _is_snap_chromium()

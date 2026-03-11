@@ -131,6 +131,9 @@ def get_profile_dir(profile_name: str, chromium_path: Path | None = None) -> Pat
     ``~/snap/chromium/common/proxy-relay-profiles/`` because the Snap
     sandbox prevents writing to ``~/.config/proxy-relay/``.
 
+    If a Snap redirect occurs and an empty ghost directory exists at the
+    non-Snap location, it is removed automatically.
+
     Args:
         profile_name: Name used as the subdirectory.
         chromium_path: Path to the Chromium binary.  Used to detect Snap
@@ -142,6 +145,7 @@ def get_profile_dir(profile_name: str, chromium_path: Path | None = None) -> Pat
     if chromium_path is not None and _is_snap_chromium(chromium_path):
         base = _SNAP_PROFILES_DIR
         log.debug("Snap Chromium detected — using %s for profiles", base)
+        _cleanup_ghost_profile(profile_name)
     else:
         base = BROWSER_PROFILES_DIR
 
@@ -149,6 +153,26 @@ def get_profile_dir(profile_name: str, chromium_path: Path | None = None) -> Pat
     profile_dir.mkdir(parents=True, exist_ok=True)
     log.debug("Browser profile directory: %s", profile_dir)
     return profile_dir
+
+
+def _cleanup_ghost_profile(profile_name: str) -> None:
+    """Remove empty ghost directory left at the non-Snap location.
+
+    When Snap Chromium is detected, earlier runs may have created empty
+    subdirectories under ``~/.config/proxy-relay/browser-profiles/``.
+    This removes them (only if empty) to avoid user confusion.
+    """
+    ghost = BROWSER_PROFILES_DIR / profile_name
+    try:
+        if ghost.is_dir():
+            ghost.rmdir()  # only succeeds if empty
+            log.debug("Removed empty ghost profile dir: %s", ghost)
+            # Also remove parent if empty
+            if BROWSER_PROFILES_DIR.is_dir() and not any(BROWSER_PROFILES_DIR.iterdir()):
+                BROWSER_PROFILES_DIR.rmdir()
+                log.debug("Removed empty browser-profiles dir: %s", BROWSER_PROFILES_DIR)
+    except OSError:
+        pass  # not empty or permission issue — leave it
 
 
 _SERVER_READY_POLL_INTERVAL: float = 0.5

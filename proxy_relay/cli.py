@@ -506,7 +506,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
         else:
             print("Auto-rotation disabled")
 
-        print(f"Launching Chromium (profile: {profile_name})...")
+        print(f"Launching Chromium (profile: {profile_name}, data: {profile_dir})...")
         return supervisor.run()
 
     finally:
