@@ -516,8 +516,9 @@ def _cmd_browse(args: argparse.Namespace) -> int:
             print(f"Failed to start server: {exc}", file=sys.stderr)
             return 1
 
-        # Read status for country info
-        status_data = read_status(status_path_for(profile_name))
+        # Read status for country info (may still be None if the file
+        # has not yet been flushed; downstream code uses the guard below)
+        status_data = read_status(status_path_for(profile_name)) or {}
 
     try:
         # 3. Health check

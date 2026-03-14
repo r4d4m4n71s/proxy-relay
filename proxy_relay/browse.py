@@ -145,6 +145,8 @@ def _chrome_args(
         "--disable-sync",
         "--disable-webrtc-stun-origin",
         "--enforce-webrtc-ip-permission-check",
+        "--disable-background-networking",
+        "--disable-component-update",
     ]
 
     if proxy_port is not None:
@@ -594,12 +596,35 @@ def auto_start_server(
         return subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )  # noqa: S603
     except OSError as exc:
         raise BrowseError(
             f"Failed to start server subprocess for profile {profile_name!r}: {exc}"
         ) from exc
+
+
+def _read_stderr(proc: subprocess.Popen[bytes], max_bytes: int = 4096) -> str:
+    """Read and decode stderr from a finished subprocess.
+
+    Safe to call only after the process has exited (``poll() is not None``).
+    Reads up to *max_bytes* to avoid blocking on an unexpectedly large stream.
+
+    Args:
+        proc: A subprocess whose stderr was opened as ``subprocess.PIPE``.
+        max_bytes: Maximum bytes to read (default 4096).
+
+    Returns:
+        Decoded stderr text, stripped of surrounding whitespace.
+        Empty string if stderr is ``None`` or unreadable.
+    """
+    if proc.stderr is None:
+        return ""
+    try:
+        raw = proc.stderr.read(max_bytes)
+        return raw.decode("utf-8", errors="replace").strip()
+    except OSError:
+        return ""
 
 
 def wait_for_server_ready(
@@ -631,9 +656,11 @@ def wait_for_server_ready(
     while time.monotonic() < deadline:
         # Check if server died
         if server_proc.poll() is not None:
+            stderr_output = _read_stderr(server_proc)
+            detail = f"\n  stderr: {stderr_output}" if stderr_output else ""
             raise BrowseError(
                 f"Server process exited with code {server_proc.returncode} "
-                f"before becoming ready (profile: {profile_name!r})"
+                f"before becoming ready (profile: {profile_name!r}){detail}"
             )
 
         # Check for status file
@@ -656,9 +683,11 @@ def wait_for_server_ready(
         server_proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         server_proc.kill()
+    stderr_output = _read_stderr(server_proc)
+    detail = f"\n  stderr: {stderr_output}" if stderr_output else ""
     raise BrowseError(
         f"Server for profile {profile_name!r} did not become ready "
-        f"within {timeout:.0f}s"
+        f"within {timeout:.0f}s{detail}"
     )
 
 

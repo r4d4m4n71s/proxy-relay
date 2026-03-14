@@ -1220,7 +1220,8 @@ class TestAutoStartServer:
         assert cmd[0] == sys.executable
 
     @patch("proxy_relay.browse.subprocess.Popen")
-    def test_redirects_output_to_devnull(self, mock_popen: MagicMock):
+    def test_redirects_output_correctly(self, mock_popen: MagicMock):
+        """stdout is discarded (DEVNULL); stderr is captured (PIPE) for diagnostics."""
         from proxy_relay.browse import auto_start_server
 
         mock_popen.return_value = MagicMock()
@@ -1228,7 +1229,7 @@ class TestAutoStartServer:
 
         kwargs = mock_popen.call_args[1]
         assert kwargs.get("stdout") == subprocess.DEVNULL
-        assert kwargs.get("stderr") == subprocess.DEVNULL
+        assert kwargs.get("stderr") == subprocess.PIPE
 
     @patch("proxy_relay.browse.subprocess.Popen")
     def test_includes_config_path_when_provided(self, mock_popen: MagicMock):
