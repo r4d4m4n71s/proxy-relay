@@ -93,13 +93,7 @@ class UpstreamManager:
         assert self._session_store is not None
 
         try:
-            from proxy_st.url import (
-                build_url,
-                generate_session_id,
-                mask_url,
-                profile_config_hash,
-                resolve_session_lifetime,
-            )
+            from proxy_st.url import build_url, mask_url
         except ImportError as exc:
             raise UpstreamError("proxy-st URL module not available") from exc
 
@@ -107,28 +101,16 @@ class UpstreamManager:
         defaults = self._config.defaults
         auth = self._config.auth
 
-        # Resolve sticky session
-        lifetime = resolve_session_lifetime(profile, defaults)
-        session_id = ""
-        if lifetime:
-            cfg_hash = profile_config_hash(profile, defaults)
-            session_id = self._session_store.get_or_create(
-                self._profile_name,
-                lifetime,
-                generate_session_id,
-                config_hash=cfg_hash,
-            )
-
-        url = build_url(
+        proxy_url = build_url(
+            self._profile_name,
+            profile,
             auth,
             defaults,
-            profile,
-            session_id,
-            profile_name=self._profile_name,
+            session_store=self._session_store,
         )
 
-        log.debug("Built upstream URL: %s", mask_url(url))
-        return url
+        log.debug("Built upstream URL: %s", mask_url(proxy_url.url))
+        return proxy_url.url
 
     def get_upstream(self) -> UpstreamInfo:
         """Resolve and return the current upstream SOCKS5 connection info.
