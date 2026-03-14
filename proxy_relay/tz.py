@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
+from functools import lru_cache
 
 from proxy_relay.logger import get_logger
 
@@ -109,6 +110,7 @@ _COUNTRY_TIMEZONES: dict[str, str] = {
 }
 
 
+@lru_cache(maxsize=64)
 def get_timezone_for_country(country_code: str) -> str | None:
     """Return a representative IANA timezone for a country code.
 

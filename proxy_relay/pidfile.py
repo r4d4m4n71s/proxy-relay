@@ -12,6 +12,7 @@ PID and status files are scoped per profile:
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import signal
@@ -92,6 +93,7 @@ def write_pid(path: Path = PID_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(str(os.getpid()), encoding="utf-8")
     os.chmod(path, 0o600)
+    atexit.register(remove_pid, path)
     log.debug("PID %d written to %s", os.getpid(), path)
 
 

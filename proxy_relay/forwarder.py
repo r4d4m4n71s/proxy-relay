@@ -61,6 +61,7 @@ async def forward_http_request(
     # Parse the absolute URL to extract host, port, and path
     host, port, path = _parse_absolute_url(url)
 
+    log.debug("Forwarding request: method=%s host=%s port=%d", method, host, port)
     log.info("Forwarding %s %s via SOCKS5", method, url)
 
     # Sanitize headers before forwarding

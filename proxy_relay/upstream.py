@@ -1,7 +1,7 @@
 """Upstream proxy manager wrapping proxy-st for SOCKS5 URL resolution."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from proxy_relay.exceptions import UpstreamError
@@ -29,6 +29,14 @@ class UpstreamInfo:
     password: str
     url: str
     country: str
+
+    def __post_init__(self) -> None:
+        if not self.host:
+            raise ValueError("UpstreamInfo.host must not be empty")
+        if not (1 <= self.port <= 65535):
+            raise ValueError(
+                f"UpstreamInfo.port must be in 1-65535, got: {self.port!r}"
+            )
 
 
 class UpstreamManager:

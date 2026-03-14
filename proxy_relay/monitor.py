@@ -242,6 +242,19 @@ class ConnectionMonitor:
             if r.outcome is not ConnectionOutcome.SUCCESS
         )
 
+    def reset(self) -> None:
+        """Reset all counters and the rolling window to initial state.
+
+        This monitor holds only in-memory state — no file handles or
+        network connections — so no external cleanup is required.
+        """
+        self._window.clear()
+        self._total_connections = 0
+        self._total_errors = 0
+        self._total_rotations = 0
+        self._last_rotation_time = 0.0
+        log.debug("ConnectionMonitor reset")
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------

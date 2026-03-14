@@ -208,6 +208,14 @@ def _cmd_start(args: argparse.Namespace) -> int:
     port = config.server.port if args.port is None else args.port
     profile_name = args.profile or config.proxy_st_profile
 
+    # Validate CLI-supplied port range
+    if args.port is not None and not (1 <= args.port <= 65535):
+        print(
+            f"Invalid --port {args.port!r}: must be an integer in 1-65535",
+            file=sys.stderr,
+        )
+        return 1
+
     # Check for existing instance of this profile
     pid = read_pid(pid_path_for(profile_name))
     if pid is not None and is_process_running(pid):
