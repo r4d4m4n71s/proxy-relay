@@ -366,8 +366,12 @@ def health_check(proxy_host: str, proxy_port: int) -> str:
 
     health_url = f"http://{proxy_host}:{proxy_port}/__health"
 
+    # Explicitly disable env proxy vars — this request goes to the local
+    # proxy-relay server, not through any upstream proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
     try:
-        with urllib.request.urlopen(health_url, timeout=_HEALTH_CHECK_TIMEOUT) as response:
+        with opener.open(health_url, timeout=_HEALTH_CHECK_TIMEOUT) as response:
             data = json.loads(response.read().decode("utf-8"))
             exit_ip = data.get("exit_ip", "")
             log.debug("Health check returned exit IP: %s", exit_ip)

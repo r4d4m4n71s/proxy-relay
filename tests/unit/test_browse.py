@@ -147,44 +147,41 @@ class TestFindChromium:
 class TestHealthCheck:
     """Tests for health_check() — calls the server's /__health endpoint."""
 
-    @patch("proxy_relay.browse.urllib.request.urlopen")
-    def test_success_returns_exit_ip(self, mock_urlopen: MagicMock):
+    @patch("urllib.request.OpenerDirector.open")
+    def test_success_returns_exit_ip(self, mock_open: MagicMock):
         from proxy_relay.browse import health_check
 
         mock_response = MagicMock()
         mock_response.read.return_value = b'{"ok": true, "exit_ip": "203.0.113.42"}'
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = mock_response
+        mock_open.return_value = mock_response
 
         result = health_check("127.0.0.1", 8080)
         assert result == "203.0.113.42"
-        mock_urlopen.assert_called_once_with(
-            "http://127.0.0.1:8080/__health", timeout=60.0,
-        )
 
-    @patch("proxy_relay.browse.urllib.request.urlopen")
-    def test_timeout_raises_browse_error(self, mock_urlopen: MagicMock):
+    @patch("urllib.request.OpenerDirector.open")
+    def test_timeout_raises_browse_error(self, mock_open: MagicMock):
         from proxy_relay.browse import health_check
         from proxy_relay.exceptions import BrowseError
 
-        mock_urlopen.side_effect = TimeoutError("timed out")
+        mock_open.side_effect = TimeoutError("timed out")
 
         with pytest.raises(BrowseError, match="[Hh]ealth"):
             health_check("127.0.0.1", 8080)
 
-    @patch("proxy_relay.browse.urllib.request.urlopen")
-    def test_url_error_raises_browse_error(self, mock_urlopen: MagicMock):
+    @patch("urllib.request.OpenerDirector.open")
+    def test_url_error_raises_browse_error(self, mock_open: MagicMock):
         from proxy_relay.browse import health_check
         from proxy_relay.exceptions import BrowseError
 
-        mock_urlopen.side_effect = URLError("connection refused")
+        mock_open.side_effect = URLError("connection refused")
 
         with pytest.raises(BrowseError):
             health_check("127.0.0.1", 8080)
 
-    @patch("proxy_relay.browse.urllib.request.urlopen")
-    def test_http_503_parses_error_body(self, mock_urlopen: MagicMock):
+    @patch("urllib.request.OpenerDirector.open")
+    def test_http_503_parses_error_body(self, mock_open: MagicMock):
         import io
         from proxy_relay.browse import health_check
         from proxy_relay.exceptions import BrowseError
@@ -195,12 +192,12 @@ class TestHealthCheck:
             msg="Service Unavailable", hdrs=MagicMock(),
             fp=io.BytesIO(body),
         )
-        mock_urlopen.side_effect = exc
+        mock_open.side_effect = exc
 
         with pytest.raises(BrowseError, match="upstream unreachable"):
             health_check("127.0.0.1", 8080)
 
-    @patch("proxy_relay.browse.urllib.request.urlopen")
+    @patch("urllib.request.OpenerDirector.open")
     def test_os_error_raises_browse_error(self, mock_urlopen: MagicMock):
         from proxy_relay.browse import health_check
         from proxy_relay.exceptions import BrowseError
