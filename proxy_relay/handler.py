@@ -22,6 +22,9 @@ log = get_logger(__name__)
 # Maximum request line + headers size (64 KiB)
 _MAX_HEADER_SIZE: int = 65536
 
+# Maximum allowed Content-Length for plain HTTP request bodies (10 MiB)
+_MAX_BODY_SIZE: int = 10 * 1024 * 1024
+
 # Maximum time to wait for the initial request line (seconds)
 _REQUEST_TIMEOUT: float = 30.0
 
@@ -262,9 +265,20 @@ async def _handle_http(
                 pass
             break
 
-    if content_length > len(body):
+    if content_length > _MAX_BODY_SIZE:
+        log.warning(
+            "Request body too large: Content-Length %d exceeds limit %d",
+            content_length,
+            _MAX_BODY_SIZE,
+        )
+        await _send_error(client_writer, 413, "Content Too Large")
+        return
+
+    while content_length > len(body):
         remaining = content_length - len(body)
         extra = await client_reader.read(remaining)
+        if not extra:
+            break  # EOF — client disconnected before sending full body
         body += extra
 
     await forward_http_request(
@@ -335,16 +349,16 @@ async def _handle_health(
     reason = "OK" if ok else "Service Unavailable"
     payload = json.dumps({"ok": ok, "exit_ip" if ok else "error": body})
 
-    response = (
+    payload_bytes = payload.encode("utf-8")
+    response_head = (
         f"HTTP/1.1 {status} {reason}\r\n"
         f"Content-Type: application/json\r\n"
-        f"Content-Length: {len(payload)}\r\n"
+        f"Content-Length: {len(payload_bytes)}\r\n"
         f"Connection: close\r\n"
         f"\r\n"
-        f"{payload}"
-    )
+    ).encode("latin-1")
     try:
-        client_writer.write(response.encode("latin-1"))
+        client_writer.write(response_head + payload_bytes)
         await client_writer.drain()
     except OSError:
         pass
@@ -363,16 +377,16 @@ async def _send_error(
         reason: HTTP reason phrase.
     """
     body = f"{status_code} {reason}\r\n"
-    response = (
+    body_bytes = body.encode("latin-1")
+    response_head = (
         f"HTTP/1.1 {status_code} {reason}\r\n"
         f"Content-Type: text/plain\r\n"
-        f"Content-Length: {len(body)}\r\n"
+        f"Content-Length: {len(body_bytes)}\r\n"
         f"Connection: close\r\n"
         f"\r\n"
-        f"{body}"
-    )
+    ).encode("latin-1")
     try:
-        writer.write(response.encode("latin-1"))
+        writer.write(response_head + body_bytes)
         await writer.drain()
     except OSError:
         pass

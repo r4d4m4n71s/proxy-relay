@@ -86,7 +86,7 @@ class TestForwardHttpRequest:
 
         mock_remote_reader = AsyncMock(spec=asyncio.StreamReader)
         response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"
-        mock_remote_reader.read = AsyncMock(return_value=response)
+        mock_remote_reader.read = AsyncMock(side_effect=[response, b""])
 
         mock_remote_writer = AsyncMock(spec=asyncio.StreamWriter)
         mock_remote_writer.write = MagicMock()
@@ -135,8 +135,7 @@ class TestForwardHttpRequest:
         from proxy_relay.forwarder import forward_http_request
 
         mock_remote_reader = AsyncMock(spec=asyncio.StreamReader)
-        response = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
-        mock_remote_reader.read = AsyncMock(return_value=response)
+        mock_remote_reader.read = AsyncMock(side_effect=[b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", b""])
 
         mock_remote_writer = AsyncMock(spec=asyncio.StreamWriter)
         mock_remote_writer.write = MagicMock()
@@ -183,7 +182,7 @@ class TestForwardHttpRequest:
         response_body = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello"
 
         mock_remote_reader = AsyncMock(spec=asyncio.StreamReader)
-        mock_remote_reader.read = AsyncMock(return_value=response_body)
+        mock_remote_reader.read = AsyncMock(side_effect=[response_body, b""])
 
         mock_remote_writer = AsyncMock(spec=asyncio.StreamWriter)
         mock_remote_writer.write = MagicMock()

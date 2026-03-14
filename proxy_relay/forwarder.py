@@ -20,8 +20,8 @@ from proxy_relay.upstream import UpstreamInfo
 
 log = get_logger(__name__)
 
-# Maximum size for reading the HTTP response (10 MiB)
-_MAX_RESPONSE_SIZE: int = 10 * 1024 * 1024
+# Chunk size for streaming the upstream response to the client (8 KiB)
+_STREAM_CHUNK_SIZE: int = 8192
 
 # Read timeout for the upstream response (seconds)
 _RESPONSE_TIMEOUT: float = 60.0
@@ -87,22 +87,25 @@ async def forward_http_request(
         remote_writer.write(raw_request)
         await remote_writer.drain()
 
-        # Read and relay the response
-        response = await asyncio.wait_for(
-            remote_reader.read(_MAX_RESPONSE_SIZE),
-            timeout=_RESPONSE_TIMEOUT,
-        )
-
-        if response:
-            client_writer.write(response)
+        # Stream the response back to the client in chunks
+        total_bytes = 0
+        while True:
+            chunk = await asyncio.wait_for(
+                remote_reader.read(_STREAM_CHUNK_SIZE),
+                timeout=_RESPONSE_TIMEOUT,
+            )
+            if not chunk:
+                break
+            client_writer.write(chunk)
             await client_writer.drain()
+            total_bytes += len(chunk)
 
         elapsed_ms = (time.monotonic() - start) * 1000
         log.info(
             "Forwarded %s %s -> %d bytes (%.0fms)",
             method,
             path,
-            len(response),
+            total_bytes,
             elapsed_ms,
         )
     except TunnelError:

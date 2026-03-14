@@ -248,6 +248,12 @@ class ProxyServer:
                 return True, body
 
             except Exception as exc:
+                # Close the tunnel writer if it was opened before the error
+                if "result" in locals() and hasattr(result, "writer"):
+                    try:
+                        result.writer.close()
+                    except Exception:
+                        pass
                 last_error = str(exc)
                 log.warning(
                     "Health check failed (attempt %d/%d): %s",
