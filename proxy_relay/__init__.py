@@ -9,6 +9,18 @@ __all__ = [
     "RelayConfig",
     "UpstreamManager",
     "run_server",
+    # Browser API
+    "BrowserHandle",
+    "BrowseError",
+    "can_launch_browser",
+    "open_browser",
+    "open_browser_tab",
+    "close_browser",
+    "find_chromium",
+    "auto_start_server",
+    "wait_for_server_ready",
+    "auto_stop_server",
+    "health_check",
 ]
 
 
@@ -30,4 +42,16 @@ def __getattr__(name: str):
         from proxy_relay.server import run_server
 
         return run_server
+
+    _browse_names = {
+        "BrowserHandle", "BrowseError", "can_launch_browser",
+        "open_browser", "open_browser_tab", "close_browser",
+        "find_chromium", "auto_start_server", "wait_for_server_ready",
+        "auto_stop_server", "health_check",
+    }
+    if name in _browse_names:
+        from proxy_relay import browse as _browse
+
+        return getattr(_browse, name)
+
     raise AttributeError(f"module 'proxy_relay' has no attribute {name!r}")

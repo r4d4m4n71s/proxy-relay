@@ -127,6 +127,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="proxy-st profile name (default: 'browse')",
     )
 
+    # profile-clean subcommand
+    clean_parser = subparsers.add_parser(
+        "profile-clean",
+        help="List or delete browser profiles",
+    )
+    clean_parser.add_argument(
+        "names",
+        nargs="*",
+        help="Profile name(s) to delete (omit to list all profiles)",
+    )
+    clean_parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="delete_all",
+        help="Delete all browser profiles",
+    )
+
     # browse subcommand
     browse_parser = subparsers.add_parser(
         "browse",
@@ -155,6 +172,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Path to config file",
+    )
+    browse_parser.add_argument(
+        "--browser",
+        type=str,
+        default=None,
+        help="Chromium-based browser binary name or path (default: auto-detect)",
     )
 
     return parser
@@ -393,6 +416,48 @@ def _cmd_rotate(args: argparse.Namespace) -> int:
     return 1
 
 
+def _cmd_profile_clean(args: argparse.Namespace) -> int:
+    """Execute the 'profile-clean' subcommand.
+
+    Lists profiles when no names are given, or deletes the specified profiles.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        Exit code (0 for success, non-zero for error).
+    """
+    profiles = _browse.list_profiles()
+
+    # List mode: no names and no --all
+    if not args.names and not args.delete_all:
+        if not profiles:
+            print("No browser profiles found.")
+        else:
+            print(f"Browser profiles ({len(profiles)}):")
+            for name in profiles:
+                print(f"  - {name}")
+        return 0
+
+    # Delete mode
+    to_delete = profiles if args.delete_all else args.names
+    if not to_delete:
+        print("No browser profiles to delete.")
+        return 0
+
+    errors = 0
+    for name in to_delete:
+        try:
+            removed = _browse.delete_profile(name)
+            for path in removed:
+                print(f"  Removed: {path}")
+        except BrowseError as exc:
+            print(f"  {exc}", file=sys.stderr)
+            errors += 1
+
+    return 1 if errors else 0
+
+
 def _cmd_browse(args: argparse.Namespace) -> int:
     """Execute the 'browse' subcommand with auto-start/stop lifecycle.
 
@@ -462,10 +527,14 @@ def _cmd_browse(args: argparse.Namespace) -> int:
             print(f"\nHealth check failed:\n  {exc}\n", file=sys.stderr)
             return 1
 
-        # 4. Find Chromium
+        # 4. Find browser (CLI --browser > config browser > auto-detect)
+        browser_override = getattr(args, "browser", None) or config.browse.browser or None
         try:
-            chromium_path = _browse.find_chromium()
-            log.info("Found Chromium at %s", chromium_path)
+            if browser_override:
+                chromium_path = _browse.resolve_browser(browser_override)
+            else:
+                chromium_path = _browse.find_chromium()
+            log.info("Found browser at %s", chromium_path)
         except BrowseError as exc:
             print(str(exc), file=sys.stderr)
             return 1
@@ -529,6 +598,7 @@ def main() -> None:
         "stop": _cmd_stop,
         "status": _cmd_status,
         "rotate": _cmd_rotate,
+        "profile-clean": _cmd_profile_clean,
         "browse": _cmd_browse,
     }
 

@@ -3,6 +3,13 @@
 Finds a local Chromium installation, verifies the proxy chain via a health
 check, and supervises the browser process alongside the running relay daemon.
 Optionally auto-rotates the upstream proxy at a configurable interval.
+
+Public API
+----------
+- :func:`can_launch_browser` — headless / SSH environment check
+- :func:`open_browser` — launch Chromium with anti-leak flags, return handle
+- :func:`open_browser_tab` — open a URL in an existing browser session
+- :func:`close_browser` — terminate a browser launched by :func:`open_browser`
 """
 from __future__ import annotations
 
@@ -15,6 +22,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 from proxy_relay.config import CONFIG_DIR
@@ -31,11 +39,247 @@ _CHROMIUM_CANDIDATES: tuple[str, ...] = (
     "chromium",
     "chromium-browser",
     "google-chrome",
+    "google-chrome-stable",
+    "microsoft-edge",
+    "microsoft-edge-stable",
+    "brave-browser",
+    "brave-browser-stable",
+    "vivaldi",
+    "vivaldi-stable",
+    "opera",
 )
 BROWSER_PROFILES_DIR: Path = CONFIG_DIR / "browser-profiles"
 
 # Snap Chromium can only write to ~/snap/chromium/common/ due to sandbox restrictions.
 _SNAP_PROFILES_DIR: Path = Path.home() / "snap" / "chromium" / "common" / "proxy-relay-profiles"
+
+
+# ---------------------------------------------------------------------------
+# Public dataclass
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class BrowserHandle:
+    """Handle to a launched browser process and its profile.
+
+    Returned by :func:`open_browser`.  Pass to :func:`close_browser` or
+    :func:`open_browser_tab` to manage the session lifecycle.
+    """
+
+    process: subprocess.Popen[bytes]
+    profile_dir: Path
+    chromium_path: Path
+
+
+# ---------------------------------------------------------------------------
+# Environment detection
+# ---------------------------------------------------------------------------
+
+
+def can_launch_browser() -> bool:
+    """Check whether a graphical browser can be launched.
+
+    Returns ``False`` in headless environments (no ``DISPLAY`` or
+    ``WAYLAND_DISPLAY``), SSH sessions (``SSH_CLIENT`` set), or when no
+    Chromium binary is found.
+    """
+    has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    if not has_display:
+        log.debug("No DISPLAY or WAYLAND_DISPLAY — cannot launch browser")
+        return False
+
+    if os.environ.get("SSH_CLIENT"):
+        log.debug("SSH_CLIENT set — skipping browser launch")
+        return False
+
+    try:
+        find_chromium()
+    except BrowseError:
+        log.debug("No supported Chromium browser found on PATH")
+        return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Chromium argument builder (shared by open_browser + BrowseSupervisor)
+# ---------------------------------------------------------------------------
+
+
+def _chrome_args(
+    chromium_path: Path,
+    profile_dir: Path,
+    *,
+    proxy_host: str | None = None,
+    proxy_port: int | None = None,
+    timezone: str | None = None,
+) -> tuple[list[str], dict[str, str] | None]:
+    """Build Chromium command-line and environment with anti-leak flags.
+
+    Includes:
+    - ``--user-data-dir`` (profile isolation)
+    - ``--disable-webrtc-stun-origin`` + ``--enforce-webrtc-ip-permission-check``
+    - ``--host-resolver-rules`` (DNS leak prevention, only with proxy)
+    - ``--proxy-server`` (when *proxy_port* is not ``None``)
+    - ``--no-first-run``, ``--disable-default-apps``, ``--disable-sync``
+    - ``--start-maximized``
+    - ``TZ`` environment variable (when *timezone* is not ``None``)
+
+    Args:
+        chromium_path: Path to the Chromium binary.
+        profile_dir: Browser profile directory.
+        proxy_host: Local proxy bind address.
+        proxy_port: Local proxy port. ``None`` means no proxy flags.
+        timezone: IANA timezone name for ``TZ`` env override.
+
+    Returns:
+        Tuple of (command_args, env_dict_or_None).
+    """
+    cmd = [
+        str(chromium_path),
+        f"--user-data-dir={profile_dir}",
+        "--start-maximized",
+        "--no-first-run",
+        "--disable-default-apps",
+        "--disable-sync",
+        "--disable-webrtc-stun-origin",
+        "--enforce-webrtc-ip-permission-check",
+    ]
+
+    if proxy_port is not None:
+        host = proxy_host or "127.0.0.1"
+        cmd.append(f"--proxy-server=http://{host}:{proxy_port}")
+        cmd.append('--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1')
+
+    env: dict[str, str] | None = None
+    if timezone:
+        env = {**os.environ, "TZ": timezone}
+
+    return cmd, env
+
+
+# ---------------------------------------------------------------------------
+# Public browser lifecycle API
+# ---------------------------------------------------------------------------
+
+
+def open_browser(
+    url: str,
+    *,
+    proxy_host: str = "127.0.0.1",
+    proxy_port: int | None = None,
+    profile_name: str = "default",
+    chromium_path: Path | None = None,
+    timezone: str | None = None,
+) -> BrowserHandle:
+    """Launch Chromium configured for proxied browsing.
+
+    Lower-level API — caller controls the lifecycle via :func:`close_browser`.
+
+    Args:
+        url: URL to open.
+        proxy_host: Local proxy bind address.
+        proxy_port: Local proxy port.  ``None`` means launch without proxy
+            flags (direct connection).
+        profile_name: Browser profile name (persistent, Snap-aware).
+        chromium_path: Explicit Chromium binary.  Auto-detected if ``None``.
+        timezone: IANA timezone for ``TZ`` env var spoofing.
+
+    Returns:
+        :class:`BrowserHandle` for lifecycle management.
+
+    Raises:
+        BrowseError: If no Chromium is found or launch fails.
+    """
+    if chromium_path is None:
+        chromium_path = find_chromium()
+
+    profile_dir = get_profile_dir(profile_name, chromium_path=chromium_path)
+
+    cmd, env = _chrome_args(
+        chromium_path,
+        profile_dir,
+        proxy_host=proxy_host,
+        proxy_port=proxy_port,
+        timezone=timezone,
+    )
+    cmd.append(url)
+
+    if timezone:
+        log.info("Setting browser timezone: TZ=%s", timezone)
+    log.debug("Launching Chromium: %s", " ".join(cmd))
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )  # noqa: S603
+    except OSError as exc:
+        raise BrowseError(f"Failed to launch Chromium at {chromium_path}: {exc}") from exc
+
+    return BrowserHandle(process=proc, profile_dir=profile_dir, chromium_path=chromium_path)
+
+
+def open_browser_tab(handle: BrowserHandle, url: str) -> None:
+    """Open a new URL in an existing Chromium session (new tab).
+
+    Re-invoking Chromium with the same ``--user-data-dir`` opens a new tab
+    in the running instance rather than starting a second window.
+
+    Args:
+        handle: The running browser session.
+        url: The URL to open.
+    """
+    cmd = [
+        str(handle.chromium_path),
+        f"--user-data-dir={handle.profile_dir}",
+        url,
+    ]
+    log.debug("Opening tab in existing session: %s", " ".join(cmd))
+    subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def close_browser(handle: BrowserHandle) -> None:
+    """Terminate the browser process.
+
+    Sends SIGTERM, waits up to 5 seconds, then SIGKILL if needed.
+
+    .. note::
+
+       Snap Chromium's AppArmor confinement blocks ``os.kill()`` from the
+       parent process.  In that case, ``terminate()`` / ``kill()`` may
+       silently fail and child processes (zygote, GPU, renderer) will
+       linger until the Snap sandbox cleans them up (typically seconds).
+       This is a known Snap limitation, not a proxy-relay bug.
+
+    Does NOT remove the profile directory (profiles are persistent).
+    Safe to call multiple times.  Never raises.
+
+    Args:
+        handle: The browser session to close.
+    """
+    try:
+        if handle.process.poll() is not None:
+            return
+        handle.process.terminate()
+        handle.process.wait(timeout=5)
+        log.debug("Chromium terminated gracefully")
+    except subprocess.TimeoutExpired:
+        log.warning("Chromium did not exit in 5s — force killing")
+        try:
+            handle.process.kill()
+            handle.process.wait(timeout=5)
+        except OSError:
+            log.warning("Failed to kill Chromium process %d", handle.process.pid)
+    except OSError:
+        log.debug("Chromium process already exited")
 
 
 def find_chromium() -> Path:
@@ -64,6 +308,40 @@ def find_chromium() -> Path:
 
     raise BrowseError(
         "Chromium not found. Install chromium or google-chrome and ensure it is on PATH."
+    )
+
+
+def resolve_browser(name_or_path: str) -> Path:
+    """Resolve an explicit browser name or path to an absolute path.
+
+    If *name_or_path* is an absolute path, it is checked for existence.
+    Otherwise it is looked up via ``shutil.which()``.
+
+    Args:
+        name_or_path: Browser binary name (e.g., ``"brave-browser"``) or
+            absolute path (e.g., ``"/usr/bin/brave-browser"``).
+
+    Returns:
+        Absolute path to the browser binary.
+
+    Raises:
+        BrowseError: If the binary is not found.
+    """
+    candidate = Path(name_or_path)
+    if candidate.is_absolute():
+        if candidate.exists():
+            log.debug("Resolved browser at absolute path: %s", candidate)
+            return candidate
+        raise BrowseError(f"Browser not found at {candidate}")
+
+    resolved = shutil.which(name_or_path)
+    if resolved is not None:
+        log.debug("Resolved browser via PATH: %s -> %s", name_or_path, resolved)
+        return Path(resolved)
+
+    raise BrowseError(
+        f"Browser {name_or_path!r} not found on PATH. "
+        f"Provide the full path or install the browser."
     )
 
 
@@ -152,6 +430,12 @@ def get_profile_dir(profile_name: str, chromium_path: Path | None = None) -> Pat
     profile_dir = base / profile_name
     profile_dir.mkdir(parents=True, exist_ok=True)
     log.debug("Browser profile directory: %s", profile_dir)
+
+    # Create a convenience symlink at the non-Snap location so users can
+    # find profiles under ~/.config/proxy-relay/browser-profiles/<name>.
+    if base == _SNAP_PROFILES_DIR:
+        _create_profile_symlink(profile_name, profile_dir)
+
     return profile_dir
 
 
@@ -164,15 +448,93 @@ def _cleanup_ghost_profile(profile_name: str) -> None:
     """
     ghost = BROWSER_PROFILES_DIR / profile_name
     try:
+        if ghost.is_symlink():
+            return  # preserve convenience symlinks
         if ghost.is_dir():
             ghost.rmdir()  # only succeeds if empty
             log.debug("Removed empty ghost profile dir: %s", ghost)
-            # Also remove parent if empty
-            if BROWSER_PROFILES_DIR.is_dir() and not any(BROWSER_PROFILES_DIR.iterdir()):
-                BROWSER_PROFILES_DIR.rmdir()
-                log.debug("Removed empty browser-profiles dir: %s", BROWSER_PROFILES_DIR)
     except OSError:
         pass  # not empty or permission issue — leave it
+
+
+def _create_profile_symlink(profile_name: str, target: Path) -> None:
+    """Create a symlink at the non-Snap location pointing to the Snap profile.
+
+    ``~/.config/proxy-relay/browser-profiles/<name>`` → Snap profile dir.
+    Existing symlinks are updated if the target changed; real directories
+    are left untouched.
+    """
+    BROWSER_PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    link = BROWSER_PROFILES_DIR / profile_name
+    try:
+        if link.is_symlink():
+            if link.resolve() == target.resolve():
+                return  # already correct
+            link.unlink()
+        elif link.exists():
+            log.debug("Skipping symlink — real directory exists: %s", link)
+            return
+
+        link.symlink_to(target)
+        log.debug("Created profile symlink: %s -> %s", link, target)
+    except OSError as exc:
+        log.warning("Could not create profile symlink %s -> %s: %s", link, target, exc)
+
+
+def list_profiles() -> list[str]:
+    """Return the names of all existing browser profiles.
+
+    Scans both the Snap and non-Snap profile directories and returns a
+    deduplicated, sorted list of profile names.
+    """
+    names: set[str] = set()
+    for base in (BROWSER_PROFILES_DIR, _SNAP_PROFILES_DIR):
+        if base.is_dir():
+            for child in base.iterdir():
+                if child.is_dir() or child.is_symlink():
+                    names.add(child.name)
+    return sorted(names)
+
+
+def delete_profile(profile_name: str) -> list[str]:
+    """Delete a browser profile and its convenience symlink.
+
+    Removes the profile data directory from both the Snap location and the
+    non-Snap location (real directory or symlink).
+
+    Args:
+        profile_name: Name of the profile to delete.
+
+    Returns:
+        List of paths that were removed (for user feedback).
+
+    Raises:
+        BrowseError: If the profile does not exist in any location.
+    """
+    removed: list[str] = []
+    snap_profile = _SNAP_PROFILES_DIR / profile_name
+    default_profile = BROWSER_PROFILES_DIR / profile_name
+
+    # Remove symlink at default location first (before removing target)
+    if default_profile.is_symlink():
+        default_profile.unlink()
+        removed.append(str(default_profile) + " (symlink)")
+        log.debug("Removed profile symlink: %s", default_profile)
+    elif default_profile.is_dir():
+        shutil.rmtree(default_profile)
+        removed.append(str(default_profile))
+        log.debug("Removed profile directory: %s", default_profile)
+
+    # Remove actual data at Snap location
+    if snap_profile.is_dir():
+        shutil.rmtree(snap_profile)
+        removed.append(str(snap_profile))
+        log.debug("Removed Snap profile directory: %s", snap_profile)
+
+    if not removed:
+        raise BrowseError(f"Profile {profile_name!r} not found")
+
+    return removed
 
 
 _SERVER_READY_POLL_INTERVAL: float = 0.5
@@ -213,6 +575,14 @@ def auto_start_server(
     ]
     if config_path is not None:
         cmd.extend(["--config", str(config_path)])
+
+    # Remove stale status file so wait_for_server_ready doesn't read
+    # leftover data from a previous run.
+    stale_status = status_path_for(profile_name)
+    try:
+        stale_status.unlink(missing_ok=True)
+    except OSError:
+        pass
 
     log.info("Auto-starting server for profile %r: %s", profile_name, " ".join(cmd))
 
@@ -414,20 +784,16 @@ class BrowseSupervisor:
         Raises:
             BrowseError: If the binary cannot be executed.
         """
-        cmd = [
-            str(self._chromium_path),
-            f"--proxy-server=http://{self._proxy_host}:{self._proxy_port}",
-            f"--user-data-dir={self._profile_dir}",
-            "--start-maximized",
-            "--no-first-run",
-            "--disable-default-apps",
-            "--disable-sync",
-        ]
-        env: dict[str, str] | None = None
-        if self._timezone:
-            env = {**os.environ, "TZ": self._timezone}
-            log.info("Setting browser timezone: TZ=%s", self._timezone)
+        cmd, env = _chrome_args(
+            self._chromium_path,
+            self._profile_dir,
+            proxy_host=self._proxy_host,
+            proxy_port=self._proxy_port,
+            timezone=self._timezone,
+        )
 
+        if self._timezone:
+            log.info("Setting browser timezone: TZ=%s", self._timezone)
         log.debug("Launching Chromium: %s", " ".join(cmd))
 
         try:

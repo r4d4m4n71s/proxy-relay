@@ -40,6 +40,7 @@ port = 8080
 
 [browse]
 # rotate_interval_min = 30  # auto-rotate every N minutes (0 = disabled)
+# browser = ""  # Chromium binary name or path (auto-detect if empty)
 """
 
 
@@ -73,6 +74,7 @@ class BrowseConfig:
     """Browser launch and auto-rotation settings."""
 
     rotate_interval_min: int = 30
+    browser: str = ""
 
 
 @dataclass
@@ -233,7 +235,8 @@ def _parse_config(data: dict) -> RelayConfig:
         raise ConfigError(
             f"browse.rotate_interval_min must be a non-negative integer, got: {rotate_interval!r}"
         )
-    browse_cfg = BrowseConfig(rotate_interval_min=rotate_interval)
+    browser = str(browse_data.get("browser", ""))
+    browse_cfg = BrowseConfig(rotate_interval_min=rotate_interval, browser=browser)
 
     config = RelayConfig(
         log_level=log_level,

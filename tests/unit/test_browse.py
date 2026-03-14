@@ -244,8 +244,12 @@ class TestGetProfileDir:
     def test_snap_chromium_uses_snap_dir(self, tmp_path: Path):
         from proxy_relay.browse import get_profile_dir
 
+        default_dir = tmp_path / "default-profiles"
         snap_dir = tmp_path / "snap-profiles"
-        with patch("proxy_relay.browse._SNAP_PROFILES_DIR", snap_dir):
+        with (
+            patch("proxy_relay.browse.BROWSER_PROFILES_DIR", default_dir),
+            patch("proxy_relay.browse._SNAP_PROFILES_DIR", snap_dir),
+        ):
             result = get_profile_dir("browse", chromium_path=Path("/snap/bin/chromium"))
             assert result == snap_dir / "browse"
             assert result.is_dir()
@@ -264,7 +268,7 @@ class TestGetProfileDir:
             result = get_profile_dir("browse", chromium_path=None)
             assert result == tmp_path / "browse"
 
-    def test_snap_cleans_empty_ghost_dir(self, tmp_path: Path):
+    def test_snap_cleans_empty_ghost_dir_and_creates_symlink(self, tmp_path: Path):
         from proxy_relay.browse import get_profile_dir
 
         default_dir = tmp_path / "default-profiles"
@@ -279,7 +283,9 @@ class TestGetProfileDir:
         ):
             result = get_profile_dir("browse", chromium_path=Path("/snap/bin/chromium"))
             assert result == snap_dir / "browse"
-            assert not ghost.exists(), "empty ghost dir should be removed"
+            link = default_dir / "browse"
+            assert link.is_symlink(), "symlink should be created at ghost location"
+            assert link.resolve() == (snap_dir / "browse").resolve()
 
     def test_snap_keeps_non_empty_ghost_dir(self, tmp_path: Path):
         from proxy_relay.browse import get_profile_dir
@@ -299,7 +305,7 @@ class TestGetProfileDir:
             assert result == snap_dir / "browse"
             assert ghost.exists(), "non-empty ghost dir should be preserved"
 
-    def test_snap_removes_empty_parent_after_last_ghost(self, tmp_path: Path):
+    def test_snap_parent_kept_for_symlinks(self, tmp_path: Path):
         from proxy_relay.browse import get_profile_dir
 
         default_dir = tmp_path / "default-profiles"
@@ -312,11 +318,111 @@ class TestGetProfileDir:
             patch("proxy_relay.browse._SNAP_PROFILES_DIR", snap_dir),
         ):
             get_profile_dir("browse", chromium_path=Path("/snap/bin/chromium"))
-            assert not default_dir.exists(), "empty parent should be removed"
+            assert default_dir.exists(), "parent kept — it holds the symlink"
+            assert (default_dir / "browse").is_symlink()
 
 
 # ---------------------------------------------------------------------------
-# 5b. _is_snap_chromium()
+# 5b. list_profiles() / delete_profile()
+# ---------------------------------------------------------------------------
+
+
+class TestListProfiles:
+    """Tests for list_profiles() — enumerate existing browser profiles."""
+
+    def test_empty_dirs(self, tmp_path: Path):
+        from proxy_relay.browse import list_profiles
+
+        default_dir = tmp_path / "default"
+        snap_dir = tmp_path / "snap"
+        with (
+            patch("proxy_relay.browse.BROWSER_PROFILES_DIR", default_dir),
+            patch("proxy_relay.browse._SNAP_PROFILES_DIR", snap_dir),
+        ):
+            assert list_profiles() == []
+
+    def test_profiles_from_snap_dir(self, tmp_path: Path):
+        from proxy_relay.browse import list_profiles
+
+        default_dir = tmp_path / "default"
+        snap_dir = tmp_path / "snap"
+        (snap_dir / "alpha").mkdir(parents=True)
+        (snap_dir / "bravo").mkdir(parents=True)
+        with (
+            patch("proxy_relay.browse.BROWSER_PROFILES_DIR", default_dir),
+            patch("proxy_relay.browse._SNAP_PROFILES_DIR", snap_dir),
+        ):
+            assert list_profiles() == ["alpha", "bravo"]
+
+    def test_deduplicates_across_locations(self, tmp_path: Path):
+        from proxy_relay.browse import list_profiles
+
+        default_dir = tmp_path / "default"
+        snap_dir = tmp_path / "snap"
+        (snap_dir / "miami").mkdir(parents=True)
+        default_dir.mkdir(parents=True)
+        (default_dir / "miami").symlink_to(snap_dir / "miami")
+        with (
+            patch("proxy_relay.browse.BROWSER_PROFILES_DIR", default_dir),
+            patch("proxy_relay.browse._SNAP_PROFILES_DIR", snap_dir),
+        ):
+            assert list_profiles() == ["miami"]
+
+
+class TestDeleteProfile:
+    """Tests for delete_profile() — remove browser profiles."""
+
+    def test_delete_snap_profile_and_symlink(self, tmp_path: Path):
+        from proxy_relay.browse import delete_profile
+
+        default_dir = tmp_path / "default"
+        snap_dir = tmp_path / "snap"
+        (snap_dir / "miami").mkdir(parents=True)
+        (snap_dir / "miami" / "data.txt").write_text("x")
+        default_dir.mkdir(parents=True)
+        (default_dir / "miami").symlink_to(snap_dir / "miami")
+
+        with (
+            patch("proxy_relay.browse.BROWSER_PROFILES_DIR", default_dir),
+            patch("proxy_relay.browse._SNAP_PROFILES_DIR", snap_dir),
+        ):
+            removed = delete_profile("miami")
+
+        assert len(removed) == 2
+        assert not (default_dir / "miami").exists()
+        assert not (snap_dir / "miami").exists()
+
+    def test_delete_default_dir_only(self, tmp_path: Path):
+        from proxy_relay.browse import delete_profile
+
+        default_dir = tmp_path / "default"
+        snap_dir = tmp_path / "snap"
+        (default_dir / "local").mkdir(parents=True)
+        (default_dir / "local" / "data.txt").write_text("x")
+
+        with (
+            patch("proxy_relay.browse.BROWSER_PROFILES_DIR", default_dir),
+            patch("proxy_relay.browse._SNAP_PROFILES_DIR", snap_dir),
+        ):
+            removed = delete_profile("local")
+
+        assert len(removed) == 1
+        assert not (default_dir / "local").exists()
+
+    def test_delete_nonexistent_raises(self, tmp_path: Path):
+        from proxy_relay.browse import delete_profile
+        from proxy_relay.exceptions import BrowseError
+
+        with (
+            patch("proxy_relay.browse.BROWSER_PROFILES_DIR", tmp_path / "d"),
+            patch("proxy_relay.browse._SNAP_PROFILES_DIR", tmp_path / "s"),
+        ):
+            with pytest.raises(BrowseError, match="not found"):
+                delete_profile("ghost")
+
+
+# ---------------------------------------------------------------------------
+# 5c. _is_snap_chromium()
 # ---------------------------------------------------------------------------
 
 
@@ -1288,3 +1394,301 @@ class TestBuildParserProfile:
         parser = build_parser()
         args = parser.parse_args(["rotate", "--profile", "steal"])
         assert args.profile == "steal"
+
+
+# ---------------------------------------------------------------------------
+# 21. resolve_browser()
+# ---------------------------------------------------------------------------
+
+
+class TestResolveBrowser:
+    """Tests for resolve_browser() — explicit browser name/path resolution."""
+
+    def test_absolute_path_exists(self, tmp_path: Path):
+        from proxy_relay.browse import resolve_browser
+
+        binary = tmp_path / "my-chrome"
+        binary.write_text("#!/bin/sh")
+        result = resolve_browser(str(binary))
+        assert result == binary
+
+    def test_absolute_path_missing_raises(self):
+        from proxy_relay.browse import resolve_browser
+        from proxy_relay.exceptions import BrowseError
+
+        with pytest.raises(BrowseError, match="not found at"):
+            resolve_browser("/nonexistent/browser")
+
+    @patch("proxy_relay.browse.shutil.which", return_value="/usr/bin/brave-browser")
+    def test_bare_name_found(self, _mock_which):
+        from proxy_relay.browse import resolve_browser
+
+        result = resolve_browser("brave-browser")
+        assert result == Path("/usr/bin/brave-browser")
+
+    @patch("proxy_relay.browse.shutil.which", return_value=None)
+    def test_bare_name_missing_raises(self, _mock_which):
+        from proxy_relay.browse import resolve_browser
+        from proxy_relay.exceptions import BrowseError
+
+        with pytest.raises(BrowseError, match="not found on PATH"):
+            resolve_browser("nonexistent-browser")
+
+
+# ---------------------------------------------------------------------------
+# 22. can_launch_browser()
+# ---------------------------------------------------------------------------
+
+
+class TestCanLaunchBrowser:
+    """Tests for can_launch_browser() — environment detection."""
+
+    def test_returns_true_with_display_and_browser(self):
+        from proxy_relay.browse import can_launch_browser
+
+        env = {"DISPLAY": ":0"}
+        with (
+            patch.dict("os.environ", env, clear=True),
+            patch("proxy_relay.browse.find_chromium", return_value=Path("/usr/bin/chromium")),
+        ):
+            assert can_launch_browser() is True
+
+    def test_returns_true_with_wayland(self):
+        from proxy_relay.browse import can_launch_browser
+
+        env = {"WAYLAND_DISPLAY": "wayland-0"}
+        with (
+            patch.dict("os.environ", env, clear=True),
+            patch("proxy_relay.browse.find_chromium", return_value=Path("/usr/bin/chromium")),
+        ):
+            assert can_launch_browser() is True
+
+    def test_returns_false_no_display(self):
+        from proxy_relay.browse import can_launch_browser
+
+        with patch.dict("os.environ", {}, clear=True):
+            assert can_launch_browser() is False
+
+    def test_returns_false_ssh_session(self):
+        from proxy_relay.browse import can_launch_browser
+
+        env = {"DISPLAY": ":0", "SSH_CLIENT": "192.168.1.1 12345 22"}
+        with patch.dict("os.environ", env, clear=True):
+            assert can_launch_browser() is False
+
+    def test_returns_false_no_browser(self):
+        from proxy_relay.browse import can_launch_browser
+        from proxy_relay.exceptions import BrowseError
+
+        env = {"DISPLAY": ":0"}
+        with (
+            patch.dict("os.environ", env, clear=True),
+            patch("proxy_relay.browse.find_chromium", side_effect=BrowseError("not found")),
+        ):
+            assert can_launch_browser() is False
+
+
+# ---------------------------------------------------------------------------
+# 23. _chrome_args()
+# ---------------------------------------------------------------------------
+
+
+class TestChromeArgs:
+    """Tests for _chrome_args() — Chromium flag builder."""
+
+    def test_includes_anti_leak_flags(self):
+        from proxy_relay.browse import _chrome_args
+
+        cmd, env = _chrome_args(Path("/usr/bin/chromium"), Path("/tmp/profile"))
+        assert "--disable-webrtc-stun-origin" in cmd
+        assert "--enforce-webrtc-ip-permission-check" in cmd
+
+    def test_proxy_flags_when_port_set(self):
+        from proxy_relay.browse import _chrome_args
+
+        cmd, env = _chrome_args(
+            Path("/usr/bin/chromium"),
+            Path("/tmp/profile"),
+            proxy_host="127.0.0.1",
+            proxy_port=8080,
+        )
+        assert "--proxy-server=http://127.0.0.1:8080" in cmd
+        assert any("host-resolver-rules" in arg for arg in cmd)
+
+    def test_no_proxy_flags_when_port_none(self):
+        from proxy_relay.browse import _chrome_args
+
+        cmd, env = _chrome_args(Path("/usr/bin/chromium"), Path("/tmp/profile"))
+        assert not any("proxy-server" in arg for arg in cmd)
+        assert not any("host-resolver-rules" in arg for arg in cmd)
+
+    def test_timezone_sets_env(self):
+        from proxy_relay.browse import _chrome_args
+
+        cmd, env = _chrome_args(
+            Path("/usr/bin/chromium"),
+            Path("/tmp/profile"),
+            timezone="Europe/Berlin",
+        )
+        assert env is not None
+        assert env["TZ"] == "Europe/Berlin"
+
+    def test_no_timezone_env_is_none(self):
+        from proxy_relay.browse import _chrome_args
+
+        cmd, env = _chrome_args(Path("/usr/bin/chromium"), Path("/tmp/profile"))
+        assert env is None
+
+    def test_standard_flags_present(self):
+        from proxy_relay.browse import _chrome_args
+
+        cmd, env = _chrome_args(Path("/usr/bin/chromium"), Path("/tmp/profile"))
+        assert "--no-first-run" in cmd
+        assert "--disable-default-apps" in cmd
+        assert "--disable-sync" in cmd
+        assert "--start-maximized" in cmd
+        assert "--user-data-dir=/tmp/profile" in cmd
+
+
+# ---------------------------------------------------------------------------
+# 24. open_browser() / open_browser_tab() / close_browser()
+# ---------------------------------------------------------------------------
+
+
+class TestOpenBrowser:
+    """Tests for open_browser() — launch Chromium with profile."""
+
+    def test_returns_browser_handle(self, tmp_path: Path):
+        from proxy_relay.browse import BrowserHandle, open_browser
+
+        mock_proc = MagicMock(spec=subprocess.Popen)
+        with (
+            patch("proxy_relay.browse.find_chromium", return_value=Path("/usr/bin/chromium")),
+            patch("proxy_relay.browse.get_profile_dir", return_value=tmp_path / "profile"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+        ):
+            handle = open_browser("https://example.com", profile_name="test")
+
+        assert isinstance(handle, BrowserHandle)
+        assert handle.process is mock_proc
+        assert handle.profile_dir == tmp_path / "profile"
+        assert handle.chromium_path == Path("/usr/bin/chromium")
+
+    def test_passes_proxy_flags(self, tmp_path: Path):
+        from proxy_relay.browse import open_browser
+
+        mock_proc = MagicMock(spec=subprocess.Popen)
+        with (
+            patch("proxy_relay.browse.find_chromium", return_value=Path("/usr/bin/chromium")),
+            patch("proxy_relay.browse.get_profile_dir", return_value=tmp_path / "profile"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+        ):
+            open_browser(
+                "https://example.com",
+                proxy_host="127.0.0.1",
+                proxy_port=9876,
+                profile_name="test",
+            )
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--proxy-server=http://127.0.0.1:9876" in cmd
+        assert "https://example.com" in cmd
+
+    def test_no_proxy_flags_when_port_none(self, tmp_path: Path):
+        from proxy_relay.browse import open_browser
+
+        mock_proc = MagicMock(spec=subprocess.Popen)
+        with (
+            patch("proxy_relay.browse.find_chromium", return_value=Path("/usr/bin/chromium")),
+            patch("proxy_relay.browse.get_profile_dir", return_value=tmp_path / "profile"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+        ):
+            open_browser("https://example.com", profile_name="test")
+
+        cmd = mock_popen.call_args[0][0]
+        assert not any("proxy-server" in arg for arg in cmd)
+
+    def test_os_error_raises_browse_error(self, tmp_path: Path):
+        from proxy_relay.browse import open_browser
+        from proxy_relay.exceptions import BrowseError
+
+        with (
+            patch("proxy_relay.browse.find_chromium", return_value=Path("/usr/bin/chromium")),
+            patch("proxy_relay.browse.get_profile_dir", return_value=tmp_path / "profile"),
+            patch("subprocess.Popen", side_effect=OSError("exec failed")),
+        ):
+            with pytest.raises(BrowseError, match="Failed to launch"):
+                open_browser("https://example.com", profile_name="test")
+
+
+class TestOpenBrowserTab:
+    """Tests for open_browser_tab() — new tab in existing session."""
+
+    def test_invokes_chromium_with_same_profile(self):
+        from proxy_relay.browse import BrowserHandle, open_browser_tab
+
+        handle = BrowserHandle(
+            process=MagicMock(),
+            profile_dir=Path("/tmp/profile"),
+            chromium_path=Path("/usr/bin/chromium"),
+        )
+        with patch("subprocess.Popen") as mock_popen:
+            open_browser_tab(handle, "https://new-url.com")
+
+        cmd = mock_popen.call_args[0][0]
+        assert cmd[0] == "/usr/bin/chromium"
+        assert "--user-data-dir=/tmp/profile" in cmd
+        assert "https://new-url.com" in cmd
+
+
+class TestCloseBrowser:
+    """Tests for close_browser() — terminate browser process."""
+
+    def test_terminates_running_process(self):
+        from proxy_relay.browse import close_browser, BrowserHandle
+
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.poll.return_value = None
+        handle = BrowserHandle(process=proc, profile_dir=Path("/tmp/p"), chromium_path=Path("/x"))
+        close_browser(handle)
+        proc.terminate.assert_called_once()
+
+    def test_force_kills_on_timeout(self):
+        from proxy_relay.browse import close_browser, BrowserHandle
+
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.poll.return_value = None
+        # First wait (after terminate) times out; second wait (after kill) succeeds
+        proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="x", timeout=5), None]
+        handle = BrowserHandle(process=proc, profile_dir=Path("/tmp/p"), chromium_path=Path("/x"))
+        close_browser(handle)
+        proc.kill.assert_called_once()
+
+    def test_noop_when_already_exited(self):
+        from proxy_relay.browse import close_browser, BrowserHandle
+
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.poll.return_value = 0
+        handle = BrowserHandle(process=proc, profile_dir=Path("/tmp/p"), chromium_path=Path("/x"))
+        close_browser(handle)
+        proc.terminate.assert_not_called()
+
+    def test_never_raises(self):
+        from proxy_relay.browse import close_browser, BrowserHandle
+
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.poll.return_value = None
+        proc.terminate.side_effect = OSError("already dead")
+        handle = BrowserHandle(process=proc, profile_dir=Path("/tmp/p"), chromium_path=Path("/x"))
+        close_browser(handle)  # should not raise
+
+    def test_does_not_remove_profile_dir(self, tmp_path: Path):
+        from proxy_relay.browse import close_browser, BrowserHandle
+
+        profile = tmp_path / "myprofile"
+        profile.mkdir()
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.poll.return_value = 0
+        handle = BrowserHandle(process=proc, profile_dir=profile, chromium_path=Path("/x"))
+        close_browser(handle)
+        assert profile.exists(), "profile dir must NOT be removed"
