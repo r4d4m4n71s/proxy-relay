@@ -195,6 +195,7 @@ Controls the `proxy-relay browse` command behavior.
 | Parameter | Type | Default | Range | Description |
 |-----------|------|---------|-------|-------------|
 | `rotate_interval_min` | integer | `30` | >= 0 | Minutes between automatic upstream proxy rotations. `0` disables auto-rotation. |
+| `browser` | string | `""` | — | Chromium-based browser binary name or path. Empty means auto-detect. |
 
 ```toml
 [browse]
@@ -220,6 +221,23 @@ rotate_interval_min = 30
 3. `[browse] rotate_interval_min` in config → config value
 4. Default → `30`
 
+### `browser`
+
+**What it does:** Specifies which Chromium-based browser to use. When empty (default), proxy-relay searches for browsers in this order: Snap Chromium, Chromium, Chrome, Chrome Stable, Edge, Brave, Vivaldi, Opera.
+
+**Supported browsers:** Any Chromium-based browser that accepts `--proxy-server`, `--user-data-dir`, and WebRTC flags.
+
+| Value | Browser |
+|-------|---------|
+| `""` | Auto-detect (default) |
+| `"chromium"` | Chromium |
+| `"google-chrome"` | Google Chrome |
+| `"brave-browser"` | Brave Browser |
+| `"microsoft-edge"` | Microsoft Edge |
+| `"vivaldi"` | Vivaldi |
+| `"opera"` | Opera |
+| `"/usr/bin/chromium"` | Explicit path (skips PATH search) |
+
 ---
 
 ## CLI Commands
@@ -238,23 +256,48 @@ Start the proxy relay server.
 
 ### `proxy-relay stop`
 
-Stop the running server. Sends SIGTERM to the process identified by the PID file.
+Stop the running server. Sends SIGTERM to the process identified by the profile-scoped PID file.
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--profile` | string | `"browse"` | proxy-st profile name — identifies which server instance to stop |
 
 ### `proxy-relay status [--json]`
 
 Show server status: PID, bind address, upstream proxy, country, connection counts, and monitor stats.
 
-| Flag | Description |
-|------|-------------|
-| `--json` | Output as JSON instead of human-readable text |
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | flag | off | Output as JSON instead of human-readable text |
+| `--profile` | string | `"browse"` | proxy-st profile name — identifies which server instance to query |
 
 ### `proxy-relay rotate`
 
 Trigger an immediate upstream proxy rotation. Sends SIGUSR1 to the running process.
 
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--profile` | string | `"browse"` | proxy-st profile name — identifies which server instance to rotate |
+
+### `proxy-relay profile-clean`
+
+List or delete browser profiles. Without arguments, lists all profiles. With names, deletes the specified profiles.
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `names` | positional | *(none)* | Profile name(s) to delete (omit to list) |
+| `--all` | flag | off | Delete all browser profiles |
+
+**Examples:**
+```bash
+proxy-relay profile-clean                    # List all profiles
+proxy-relay profile-clean miami steal        # Delete specific profiles
+proxy-relay profile-clean --all              # Delete all profiles
+```
+
 ### `proxy-relay browse`
 
-Launch Chromium through the running proxy relay.
+Launch Chromium through the proxy relay. **Automatically starts a server if none is running** for the requested profile and stops it when the browser exits.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
@@ -262,23 +305,39 @@ Launch Chromium through the running proxy relay.
 | `--no-rotate` | flag | off | Disable auto-rotation entirely |
 | `--profile` | string | from config | Override proxy-st profile name (also selects the browser workspace) |
 | `--config` | path | `~/.config/proxy-relay/config.toml` | Use a different config file |
+| `--browser NAME` | string | auto-detect | Chromium-based browser binary name or path (e.g., `brave-browser`, `/usr/bin/google-chrome`) |
 
 **Profile resolution** (first match wins):
 1. `--profile NAME` CLI flag → `NAME`
 2. `proxy_st_profile` in config → config value
 3. Default → `"browse"`
 
-**Pre-flight checks (in order):**
-1. Verify proxy-relay is running (PID file + process liveness)
-2. Health check via internal `/__health` endpoint (server-side rotate+retry — see [Health Check](#health-check))
-3. Locate Chromium binary on the system
-4. Resolve timezone for the proxy exit country
+**Browser resolution** (first match wins):
+1. `--browser NAME` CLI flag → `NAME`
+2. `[browse] browser` in config → config value
+3. Auto-detect → search candidates in order: Chromium (Snap), Chromium, Chrome, Chrome Stable, Edge, Brave, Vivaldi, Opera
+
+**Server auto-start lifecycle:**
+
+The browse command manages the server lifecycle automatically:
+
+1. **Check** — reads the profile-scoped PID file (`~/.config/proxy-relay/{profile}.pid`) and checks if the process is alive.
+2. **Reuse** — if a server is already running for this profile, reuses it (reads host/port from the status file).
+3. **Auto-start** — if no server is running, starts one as a subprocess with `--port 0` (OS assigns a free port). Polls the status file until the server writes its actual port, with a 30-second timeout.
+4. **Auto-stop** — when the browser exits (or on error), if the server was auto-started, it is terminated (SIGTERM, then SIGKILL after 5s). If the server was already running before browse, it is left untouched.
+
+This means `proxy-relay browse` is fully self-contained — no need to run `proxy-relay start` first.
+
+**Pre-flight checks (after server is ready, in order):**
+1. Health check via internal `/__health` endpoint (server-side rotate+retry — see [Health Check](#health-check))
+2. Locate Chromium binary on the system
+3. Resolve timezone for the proxy exit country
 
 **Supervisor behavior:**
 - Polls proxy-relay PID every 2 seconds
 - If proxy-relay dies → kills Chromium, exits with code 1
-- If user closes Chromium → exits with code 0 (proxy keeps running)
-- If user presses Ctrl-C → kills Chromium, exits with code 130
+- If user closes Chromium → exits with code 0 (server keeps running if it was pre-existing; auto-stopped if it was auto-started)
+- If user presses Ctrl-C → kills Chromium, exits with code 130 (auto-started server is auto-stopped)
 
 ---
 
@@ -294,6 +353,9 @@ These flags are passed to Chromium when launched by `proxy-relay browse`:
 | `--no-first-run` | Skip the "Welcome to Chromium" first-run dialog and setup wizard. |
 | `--disable-default-apps` | Don't install default apps (Gmail, YouTube, etc.) on first launch. Keeps the profile clean. |
 | `--disable-sync` | Disable Google account sync. Prevents data from leaking to/from your Google account across profiles. |
+| `--disable-webrtc-stun-origin` | Prevent WebRTC STUN requests from leaking the real IP address. |
+| `--enforce-webrtc-ip-permission-check` | Require explicit permission before WebRTC can access local IPs. |
+| `--host-resolver-rules=...` | Force remote DNS resolution through the proxy. Prevents local DNS leaks that could reveal which sites you visit. Only applied when using a proxy. |
 
 ### `--user-data-dir` (browser profile isolation)
 
@@ -337,6 +399,24 @@ These flags are passed to Chromium when launched by `proxy-relay browse`:
 
 **Disk usage:** Each profile starts at ~5 MB and grows with cache. Typical active profile: 50–500 MB depending on browsing.
 
+### Snap Chromium — known limitations
+
+When Chromium is installed via Snap (`sudo snap install chromium`), the Snap sandbox (AppArmor confinement) imposes restrictions that affect proxy-relay:
+
+| Limitation | Impact | Workaround |
+|-----------|--------|------------|
+| **Profile directory restriction** | Chromium can only write to `~/snap/chromium/common/`. Profiles must go there, not `~/.config/proxy-relay/`. | proxy-relay auto-detects Snap and redirects profiles. Symlinks provide convenience access at the original location. |
+| **Signal delivery blocked** | `os.kill()`, `os.killpg()`, and `pkill` cannot signal Snap Chromium processes — even from the parent process, even with the same UID. AppArmor returns `EPERM`. | `close_browser()` calls `process.terminate()`, which may silently fail. Child processes (zygote, GPU, renderer) linger 5–15 seconds until the Snap sandbox cleans them up. |
+| **No cross-session signalling** | Once the parent Python process exits, Snap Chromium children become unkillable from any other process. | Ensure `close_browser()` is called **before** the parent exits. The `finally` block in tidal-dl's login flow handles this. |
+
+**What is NOT affected:**
+- Other Chromium windows or browser sessions (each is isolated by `--user-data-dir`)
+- Non-Snap browsers (Chrome, Brave, Edge, Vivaldi, Opera) — these respond normally to signals
+- Profile data integrity — no corruption from lingering child processes
+- Network connections — proxy-relay server is stopped independently via `auto_stop_server()`
+
+**Recommendation:** If clean process termination is important, use a non-Snap Chromium installation (e.g., `google-chrome` from the official `.deb` package or `brave-browser`). Configure via `[browse] browser = "google-chrome"` in `config.toml`.
+
 ### `TZ` environment variable (timezone spoofing)
 
 **Not a Chromium flag** but an environment variable set on the Chromium process.
@@ -366,6 +446,67 @@ When proxy-relay rotates, it:
 4. All new connections use the fresh IP
 
 Existing connections are NOT interrupted — only new connections go through the new IP.
+
+#### Rotation triggers
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        ROTATION FLOW                                │
+│                                                                     │
+│  ┌─────────────────┐    ┌──────────────────┐   ┌────────────────┐  │
+│  │ 1. Manual        │    │ 2. Monitor        │   │ 3. Health      │  │
+│  │ proxy-relay      │    │ error_threshold   │   │    check retry │  │
+│  │ rotate           │    │ reached           │   │    (/__health) │  │
+│  │ (sends SIGUSR1)  │    │ (2 errors in 100) │   │    on failure  │  │
+│  └───────┬──────────┘    └────────┬──────────┘   └───────┬────────┘  │
+│          │                        │                       │          │
+│          │   ┌────────────────┐   │                       │          │
+│          │   │ 4. Browse timer │   │                       │          │
+│          │   │ every N min     │   │                       │          │
+│          │   │ (sends SIGUSR1) │   │                       │          │
+│          │   └───────┬────────┘   │                       │          │
+│          │           │            │                       │          │
+│          ▼           ▼            ▼                       ▼          │
+│       ┌──────────────────────────────────────────────────────┐      │
+│       │            server._do_rotate()                        │      │
+│       │  → upstream_manager.rotate()                          │      │
+│       │  → new session ID → new exit IP                       │      │
+│       │  → status.json updated (country, upstream_url)        │      │
+│       └──────────────────────────────────────────────────────┘      │
+│                              │                                      │
+│                              ▼                                      │
+│                 ┌───────────────────────┐                           │
+│                 │ ⚠ Browser TZ is NOT   │                           │
+│                 │   updated — see below │                           │
+│                 └───────────────────────┘                           │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### Timezone and rotation — known limitation
+
+The `TZ` environment variable is set **once at browser launch** and cannot be updated while the browser is running:
+
+```
+proxy-relay browse
+    │
+    ├─ 1. Server ready → read status.json → country = "DE"
+    ├─ 2. Lookup timezone → TZ = "Europe/Berlin"
+    ├─ 3. Launch Chromium with TZ=Europe/Berlin    ◄── SET ONCE
+    │       └─ JS: Intl.DateTimeFormat() → "Europe/Berlin" ✓
+    │
+    ├─ ... 30 min later: auto-rotation ...
+    │       └─ Server rotates → new exit IP in Japan
+    │       └─ status.json: country = "JP"
+    │       └─ Browser still has TZ=Europe/Berlin  ◄── NOT UPDATED
+    │           └─ JS: Intl.DateTimeFormat() → "Europe/Berlin" ✗
+    │              (IP is Japanese, but timezone says Berlin)
+    │
+    └─ Browser closed → session ends
+```
+
+**Why:** `subprocess.Popen(env=...)` sets the environment at process creation. There is no OS mechanism to modify a running process's environment variables from outside.
+
+**Mitigation:** When using `--no-rotate` or with country-pinned proxy-st profiles (same country on every rotation), this is not an issue — the timezone stays correct for the entire session.
 
 ### Sticky Sessions
 
@@ -400,8 +541,31 @@ browse command → GET http://127.0.0.1:8080/__health → server health_check()
 
 ### PID File
 
-Located at `~/.config/proxy-relay/proxy-relay.pid`. Contains the process ID of the running proxy-relay server. Used by `stop`, `status`, `rotate`, and `browse` to find and communicate with the running instance.
+Located at `~/.config/proxy-relay/{profile}.pid` (e.g., `browse.pid`, `us-browse.pid`). Contains the process ID of the running proxy-relay server for that profile. Used by `stop`, `status`, `rotate`, and `browse` to find and communicate with the correct server instance.
+
+Legacy single-instance path (`~/.config/proxy-relay/proxy-relay.pid`) is recognized by the `stop` command for backward compatibility but is no longer written by new server instances.
 
 ### Status File
 
-Located at `~/.config/proxy-relay/status.json`. Updated after every connection. Contains the current bind address, upstream URL, country, connection counts, and monitor statistics. Used by `status` and `browse` to read the running server's actual configuration.
+Located at `~/.config/proxy-relay/{profile}.status.json` (e.g., `browse.status.json`). Updated after every connection. Contains the current bind address, port, upstream URL, country, connection counts, and monitor statistics. Used by `status` and `browse` to read the running server's actual configuration.
+
+### Multi-Instance Support
+
+Profile-scoped PID and status files enable running multiple proxy-relay servers simultaneously, each serving a different proxy-st profile. For example:
+
+```bash
+# Terminal 1: US proxy on auto-assigned port
+proxy-relay start --profile us-browse
+
+# Terminal 2: DE proxy on auto-assigned port
+proxy-relay start --profile de-browse
+
+# Check status of each
+proxy-relay status --profile us-browse
+proxy-relay status --profile de-browse
+
+# Browse through a specific profile (auto-starts if not running)
+proxy-relay browse --profile us-browse
+```
+
+Each instance writes its own `{profile}.pid` and `{profile}.status.json` file, and each browser session gets its own isolated Chromium profile directory.
