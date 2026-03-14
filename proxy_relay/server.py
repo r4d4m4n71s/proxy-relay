@@ -190,6 +190,7 @@ class ProxyServer:
                 self._upstream.url,
                 self._upstream.country or "any",
             )
+            self._update_status_file()
         except Exception as exc:
             log.error("Upstream rotation failed: %s", exc)
 

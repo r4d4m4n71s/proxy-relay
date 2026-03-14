@@ -480,6 +480,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
 
     profile_name = args.profile or config.proxy_st_profile
     log_level = config.log_level
+    configure_logging(log_level)
 
     # 2. Check if a server is already running for this profile
     auto_started = False

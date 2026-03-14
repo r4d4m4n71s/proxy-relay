@@ -21,6 +21,8 @@ __all__ = [
     "wait_for_server_ready",
     "auto_stop_server",
     "health_check",
+    # Timezone
+    "get_timezone_for_country",
 ]
 
 
@@ -53,5 +55,10 @@ def __getattr__(name: str):
         from proxy_relay import browse as _browse
 
         return getattr(_browse, name)
+
+    if name == "get_timezone_for_country":
+        from proxy_relay.tz import get_timezone_for_country
+
+        return get_timezone_for_country
 
     raise AttributeError(f"module 'proxy_relay' has no attribute {name!r}")

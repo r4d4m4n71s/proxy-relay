@@ -31,6 +31,18 @@ STATUS_PATH: Path = CONFIG_DIR / "status.json"
 _DEFAULT_PROFILE: str = "browse"
 
 
+def _validate_profile_name(profile: str) -> None:
+    """Reject profile names containing path separators or special characters.
+
+    Raises:
+        ValueError: If the profile name is unsafe for use in filenames.
+    """
+    if not profile or "/" in profile or "\\" in profile or ".." in profile or "\0" in profile:
+        raise ValueError(
+            f"Invalid profile name {profile!r}: must not contain path separators or '..'"
+        )
+
+
 def pid_path_for(profile: str) -> Path:
     """Return the PID file path for a given profile.
 
@@ -39,7 +51,11 @@ def pid_path_for(profile: str) -> Path:
 
     Returns:
         Path to ``~/.config/proxy-relay/{profile}.pid``.
+
+    Raises:
+        ValueError: If the profile name contains path separators.
     """
+    _validate_profile_name(profile)
     return CONFIG_DIR / f"{profile}.pid"
 
 
@@ -51,7 +67,11 @@ def status_path_for(profile: str) -> Path:
 
     Returns:
         Path to ``~/.config/proxy-relay/{profile}.status.json``.
+
+    Raises:
+        ValueError: If the profile name contains path separators.
     """
+    _validate_profile_name(profile)
     return CONFIG_DIR / f"{profile}.status.json"
 
 
