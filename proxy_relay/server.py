@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import signal
 from collections.abc import Callable
 from dataclasses import asdict
@@ -184,7 +185,8 @@ class ProxyServer:
             return
 
         try:
-            self._upstream = self._upstream_manager.rotate()
+            new_upstream = self._upstream_manager.rotate()
+            self._upstream = new_upstream
             log.info(
                 "Upstream rotated: %s (country=%s)",
                 self._upstream.url,
@@ -192,7 +194,9 @@ class ProxyServer:
             )
             self._update_status_file()
         except Exception as exc:
-            log.error("Upstream rotation failed: %s", exc)
+            log.error(
+                "Upstream rotation failed — keeping current upstream: %s", exc
+            )
 
     async def health_check(self) -> tuple[bool, str]:
         """Check upstream connectivity, rotating on failure.
@@ -243,6 +247,20 @@ class ProxyServer:
                     body = text.split("\r\n\r\n", 1)[1].strip()
                 else:
                     body = text.strip()
+
+                # Validate the body looks like a real IP address
+                try:
+                    ipaddress.ip_address(body)
+                except ValueError:
+                    last_error = f"response body is not a valid IP address: {body!r}"
+                    log.warning(
+                        "Health check response invalid (attempt %d/%d): %s",
+                        attempt, _HEALTH_MAX_RETRIES, last_error,
+                    )
+                    if attempt < _HEALTH_MAX_RETRIES:
+                        log.info("Rotating upstream before retry...")
+                        await self._do_rotate()
+                    continue
 
                 log.info("Health check OK (attempt %d/%d): exit IP %s", attempt, _HEALTH_MAX_RETRIES, body)
                 return True, body
@@ -343,6 +361,11 @@ class ProxyServer:
         """
         assert self._upstream is not None
 
+        # Snapshot the upstream reference at connection start so that a
+        # concurrent rotation in _do_rotate() does not affect this handler
+        # mid-flight.
+        upstream_snapshot = self._upstream
+
         self._active_connections += 1
         self._total_connections += 1
         conn_id = self._total_connections
@@ -355,7 +378,7 @@ class ProxyServer:
 
         try:
             await handle_connection(
-                reader, writer, self._upstream,
+                reader, writer, upstream_snapshot,
                 monitor=self._monitor,
                 health_callback=self.health_check,
             )

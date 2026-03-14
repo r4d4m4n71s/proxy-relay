@@ -87,6 +87,7 @@ async def handle_connection(
                 upstream,
                 client_reader,
                 client_writer,
+                monitor=monitor,
             )
 
     except asyncio.TimeoutError:
@@ -238,11 +239,13 @@ async def _handle_http(
     upstream: UpstreamInfo,
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
+    *,
+    monitor: ConnectionMonitor | None = None,
 ) -> None:
     """Handle a plain HTTP request by forwarding through SOCKS5.
 
     Reads any remaining request body (based on Content-Length), then
-    delegates to the forwarder.
+    delegates to the forwarder and records the outcome in the monitor.
 
     Args:
         method: HTTP method.
@@ -253,6 +256,7 @@ async def _handle_http(
         upstream: Upstream SOCKS5 connection parameters.
         client_reader: Client stream reader.
         client_writer: Client stream writer.
+        monitor: Optional connection quality monitor for recording outcomes.
     """
     # Read remaining body if Content-Length is set
     body = body_start
@@ -281,7 +285,7 @@ async def _handle_http(
             break  # EOF — client disconnected before sending full body
         body += extra
 
-    await forward_http_request(
+    success = await forward_http_request(
         method=method,
         url=url,
         http_version=http_version,
@@ -290,6 +294,12 @@ async def _handle_http(
         upstream=upstream,
         client_writer=client_writer,
     )
+
+    if monitor is not None:
+        if success:
+            await monitor.record_success(0.0, url)
+        else:
+            await monitor.record_error(ConnectionOutcome.TUNNEL_ERROR, url, "HTTP forward failed")
 
 
 def _parse_connect_target(target: str) -> tuple[str, int]:

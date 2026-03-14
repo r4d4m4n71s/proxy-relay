@@ -35,7 +35,7 @@ async def forward_http_request(
     body: bytes,
     upstream: UpstreamInfo,
     client_writer: asyncio.StreamWriter,
-) -> None:
+) -> bool:
     """Forward a plain HTTP request through the upstream SOCKS5 proxy.
 
     Parses the absolute URL to extract the target host and port, opens a
@@ -50,6 +50,10 @@ async def forward_http_request(
         body: Request body bytes (may be empty).
         upstream: Parsed upstream SOCKS5 connection parameters.
         client_writer: Writer to send the response back to the client.
+
+    Returns:
+        True if the request was forwarded and a response received successfully,
+        False if any forwarding error occurred (timeout, tunnel failure, etc.).
 
     Raises:
         TunnelError: If the upstream connection fails.
@@ -108,14 +112,17 @@ async def forward_http_request(
             total_bytes,
             elapsed_ms,
         )
+        return True
     except TunnelError:
         raise
     except asyncio.TimeoutError:
         log.warning("Response timeout for %s %s", method, url)
         await _send_error_response(client_writer, 504, "Gateway Timeout")
+        return False
     except Exception as exc:
         log.warning("Forward error for %s %s: %s", method, url, exc)
         await _send_error_response(client_writer, 502, "Bad Gateway")
+        return False
     finally:
         if remote_writer is not None:
             try:
