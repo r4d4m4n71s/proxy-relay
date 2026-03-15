@@ -89,30 +89,30 @@ class TestSchemaColumns:
 
     def test_http_requests_columns(self):
         cols = self._column_names("http_requests")
-        required = {"request_id", "url", "method", "domain", "path", "headers"}
+        required = {"request_id", "url", "method", "headers", "profile"}
         missing = required - cols
         assert not missing, f"http_requests missing columns: {missing}"
 
     def test_http_responses_columns(self):
         cols = self._column_names("http_responses")
-        required = {"request_id", "url", "status_code", "headers", "response_ms"}
+        required = {"request_id", "url", "status", "headers", "response_ms", "profile"}
         missing = required - cols
         assert not missing, f"http_responses missing columns: {missing}"
 
     def test_cookies_columns(self):
         cols = self._column_names("cookies")
-        required = {"domain", "name", "value", "http_only", "secure", "event_type"}
+        required = {"domain", "name", "value", "http_only", "secure", "profile"}
         missing = required - cols
         assert not missing, f"cookies missing columns: {missing}"
 
     def test_storage_snapshots_columns(self):
         cols = self._column_names("storage_snapshots")
-        required = {"origin", "storage_type", "key", "value", "event_type"}
+        required = {"origin", "storage_type", "key", "value", "change_type", "profile"}
         missing = required - cols
         assert not missing, f"storage_snapshots missing columns: {missing}"
 
     def test_websocket_frames_columns(self):
         cols = self._column_names("websocket_frames")
-        required = {"url", "direction", "payload_preview", "payload_size_bytes"}
+        required = {"request_id", "url", "direction", "payload", "opcode", "profile"}
         missing = required - cols
         assert not missing, f"websocket_frames missing columns: {missing}"

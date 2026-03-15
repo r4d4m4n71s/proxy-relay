@@ -4,9 +4,6 @@ from __future__ import annotations
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
-
 # ---------------------------------------------------------------------------
 # 1. _find_free_port
 # ---------------------------------------------------------------------------
@@ -50,7 +47,6 @@ class TestIsCaptureAvailable:
 
     def test_returns_true_when_imports_succeed(self, monkeypatch):
         """is_capture_available() returns True when websockets and telemetry_monitor are present."""
-        import importlib
         import sys
 
         fake_websockets = MagicMock()

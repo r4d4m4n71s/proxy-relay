@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -94,7 +93,6 @@ class TestCdpClientConnect:
 
     async def test_connect_timeout_raises_capture_error(self):
         """connect() wraps urllib timeout as CaptureError."""
-        import urllib.error
 
         from proxy_relay.capture.cdp_client import CdpClient
         from proxy_relay.exceptions import CaptureError

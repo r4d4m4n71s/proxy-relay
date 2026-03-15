@@ -167,12 +167,27 @@ class CaptureSession:
         # mock ignores constructor arguments.
         sqlite_store = None
         try:
+            import sqlite3 as _sqlite3
+
             from telemetry_monitor.storage.sqlite import SqliteStore
 
             db_path_resolved = self._config.resolved_db_path()
             db_path_resolved.parent.mkdir(parents=True, exist_ok=True)
             sqlite_store = SqliteStore(db_path=db_path_resolved, schema=PROXY_RELAY_SCHEMA)
             sqlite_store.connect()
+
+            # BackgroundWriter drains in its own daemon thread, but
+            # SqliteStore.connect() was called in this (capture) thread.
+            # Re-open the connection with check_same_thread=False so the
+            # writer thread can use it without raising ProgrammingError.
+            if sqlite_store._conn is not None:
+                sqlite_store._conn.close()
+                sqlite_store._conn = _sqlite3.connect(
+                    str(db_path_resolved), timeout=10.0, check_same_thread=False,
+                )
+                sqlite_store._conn.execute("PRAGMA journal_mode=WAL")
+                sqlite_store._conn.execute("PRAGMA synchronous=NORMAL")
+                sqlite_store._conn.execute("PRAGMA busy_timeout=5000")
         except ImportError:
             pass  # BackgroundWriter is mocked in tests — sqlite_store not needed
 
@@ -312,9 +327,11 @@ class CaptureSession:
 
         tasks: list[asyncio.Task[None]] = list(self._poll_tasks)
 
-        # Add the CDP recv loop as a supervised task
-        recv_task = asyncio.create_task(self._cdp.recv_loop(), name="cdp-recv-supervised")
-        tasks.append(recv_task)
+        # Use the existing recv_loop task started by connect() — do NOT
+        # create a second one (two concurrent recv() on the same WebSocket
+        # causes immediate disconnection).
+        if self._cdp._recv_task is not None:
+            tasks.append(self._cdp._recv_task)
 
         # Wait for stop event or for any task to finish
         stop_wait = asyncio.create_task(self._stop_event.wait(), name="stop-wait")

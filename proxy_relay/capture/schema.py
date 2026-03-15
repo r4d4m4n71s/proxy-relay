@@ -129,7 +129,7 @@ def _build_schema() -> SchemaDefinition:
                 " ORDER BY timestamp DESC LIMIT 50"
             ),
             "slow_api_calls": (
-                "SELECT url, method, response_ms, timestamp"
+                "SELECT url, status, response_ms, timestamp"
                 " FROM http_responses WHERE response_ms > 2000"
                 " ORDER BY response_ms DESC LIMIT 50"
             ),
