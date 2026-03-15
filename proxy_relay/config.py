@@ -41,6 +41,12 @@ port = 8080
 [browse]
 # rotate_interval_min = 30  # auto-rotate every N minutes (0 = disabled)
 # browser = ""  # Chromium binary name or path (auto-detect if empty)
+
+# [capture]
+# domains = ["tidal.com", "qobuz.com"]   # domains to capture traffic for
+# max_body_bytes = 65536                 # max response/request body bytes stored
+# cookie_poll_interval_s = 30.0         # seconds between cookie snapshot polls
+# storage_poll_interval_s = 60.0        # seconds between localStorage polls
 """
 
 
@@ -87,6 +93,7 @@ class RelayConfig:
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     anti_leak: AntiLeakConfig = field(default_factory=AntiLeakConfig)
     browse: BrowseConfig = field(default_factory=BrowseConfig)
+    capture: object | None = None  # CaptureConfig | None — typed as object to avoid import
 
     @classmethod
     def load(cls, path: Path | None = None) -> RelayConfig:
@@ -244,6 +251,31 @@ def _parse_config(data: dict) -> RelayConfig:
     browser = str(browse_data.get("browser", ""))
     browse_cfg = BrowseConfig(rotate_interval_min=rotate_interval, browser=browser)
 
+    # [capture] — optional; lazy import avoids circular dependency
+    capture_data = data.get("capture")
+    capture_cfg = None
+    if capture_data is not None:
+        from pathlib import Path as _Path
+
+        from proxy_relay.capture.models import (
+            DEFAULT_CAPTURE_DOMAINS,
+            CaptureConfig,
+        )
+
+        raw_domains = capture_data.get("domains")
+        domains = frozenset(raw_domains) if raw_domains is not None else DEFAULT_CAPTURE_DOMAINS
+
+        raw_db_path = capture_data.get("db_path")
+        db_path = _Path(raw_db_path) if raw_db_path is not None else None
+
+        capture_cfg = CaptureConfig(
+            db_path=db_path,
+            domains=domains,
+            max_body_bytes=int(capture_data.get("max_body_bytes", 65_536)),
+            cookie_poll_interval_s=float(capture_data.get("cookie_poll_interval_s", 30.0)),
+            storage_poll_interval_s=float(capture_data.get("storage_poll_interval_s", 60.0)),
+        )
+
     config = RelayConfig(
         log_level=log_level,
         proxy_st_profile=proxy_st_profile,
@@ -251,6 +283,7 @@ def _parse_config(data: dict) -> RelayConfig:
         monitor=monitor,
         anti_leak=anti_leak,
         browse=browse_cfg,
+        capture=capture_cfg,
     )
 
     log.debug(

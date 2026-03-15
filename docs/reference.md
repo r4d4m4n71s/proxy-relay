@@ -12,6 +12,7 @@ Complete reference for every configuration parameter, CLI flag, and internal con
 - [[monitor] Section](#monitor-section)
 - [[anti_leak] Section](#anti_leak-section)
 - [[browse] Section](#browse-section)
+- [[capture] Section](#capture-section)
 - [CLI Commands](#cli-commands)
 - [Chromium Flags (browse command)](#chromium-flags-browse-command)
 - [Concepts](#concepts)
@@ -240,6 +241,46 @@ rotate_interval_min = 30
 
 ---
 
+## [capture] Section
+
+Optional section. When present, enables CDP traffic capture via the Chrome DevTools Protocol. Requires the `[capture]` extra: `pip install -e ".[capture]"` (installs `websockets` and `telemetry-monitor`).
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `domains` | list of strings | `["tidal.com", "qobuz.com"]` | Domain suffixes to capture traffic for. Matching is suffix-based: `"tidal.com"` also captures `api.tidal.com`. |
+| `db_path` | string | `~/.config/proxy-relay/capture.db` | Path to the SQLite capture database. Created on first use with permissions `0600`. |
+| `max_body_bytes` | integer | `65536` | Maximum UTF-8 bytes of request/response body and WebSocket payload stored per event. Larger payloads are truncated. |
+| `cookie_poll_interval_s` | float | `30.0` | Seconds between `Network.getAllCookies` polls. Only new or changed cookies are written. |
+| `storage_poll_interval_s` | float | `60.0` | Seconds between localStorage/sessionStorage polls. Only changed or removed keys are written. |
+
+```toml
+[capture]
+domains = ["tidal.com", "qobuz.com"]
+max_body_bytes = 65536
+cookie_poll_interval_s = 30.0
+storage_poll_interval_s = 60.0
+```
+
+Config values are used as defaults when `proxy-relay browse --capture` is run. All parameters can be overridden per-session with `--capture-domains` on the CLI. The `db_path` and header-redaction list cannot be overridden from the CLI; set them in `config.toml`.
+
+### Header redaction
+
+The following headers are always redacted in stored payloads (value replaced with the first 10 characters followed by `...`):
+
+`authorization`, `cookie`, `set-cookie`, `x-tidal-token`, `x-user-auth-token`, `proxy-authorization`
+
+### Database tables
+
+| Table | Contents |
+|-------|---------|
+| `http_requests` | URL, method, headers, POST body, request ID, profile |
+| `http_responses` | URL, status, MIME type, headers, body, response latency (ms), profile |
+| `cookies` | Domain, name, value (httpOnly values as SHA-256 hash), flags, expiry, profile |
+| `storage_snapshots` | Origin, storage type (localStorage/sessionStorage), key, value, change type, profile |
+| `websocket_frames` | Request ID, URL, direction (sent/received), payload, opcode, profile |
+
+---
+
 ## CLI Commands
 
 ### `proxy-relay start`
@@ -306,6 +347,8 @@ Launch Chromium through the proxy relay. **Automatically starts a server if none
 | `--profile` | string | from config | Override proxy-st profile name (also selects the browser workspace) |
 | `--config` | path | `~/.config/proxy-relay/config.toml` | Use a different config file |
 | `--browser NAME` | string | auto-detect | Chromium-based browser binary name or path (e.g., `brave-browser`, `/usr/bin/google-chrome`) |
+| `--capture` | flag | off | Enable CDP traffic capture. Requires `proxy-relay[capture]` (`websockets` + `telemetry-monitor`). |
+| `--capture-domains DOMAINS` | string | from config or `tidal.com,qobuz.com` | Comma-separated domain suffixes to capture. Only used when `--capture` is set. |
 
 **Profile resolution** (first match wins):
 1. `--profile NAME` CLI flag → `NAME`

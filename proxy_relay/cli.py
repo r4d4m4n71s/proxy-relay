@@ -9,8 +9,8 @@ import sys
 from pathlib import Path
 
 from proxy_relay import __version__
-from proxy_relay.config import MonitorConfig, RelayConfig
 from proxy_relay import browse as _browse
+from proxy_relay.config import MonitorConfig, RelayConfig
 from proxy_relay.exceptions import BrowseError, ConfigError, ProxyRelayError, UpstreamError
 from proxy_relay.logger import configure_logging, get_logger
 from proxy_relay.pidfile import (
@@ -178,6 +178,25 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Chromium-based browser binary name or path (default: auto-detect)",
+    )
+    browse_parser.add_argument(
+        "--capture",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable CDP traffic capture (requires proxy-relay[capture]: "
+            "websockets + telemetry-monitor)"
+        ),
+    )
+    browse_parser.add_argument(
+        "--capture-domains",
+        type=str,
+        default=None,
+        metavar="DOMAINS",
+        help=(
+            "Comma-separated list of domains to capture "
+            "(default: tidal.com,qobuz.com). Only used with --capture."
+        ),
     )
 
     return parser
@@ -377,7 +396,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
         monitor = status_data.get("monitor")
         if monitor is not None:
-            print(f"  Monitor:")
+            print("  Monitor:")
             print(f"    Window errors:   {monitor.get('window_error_count', '?')}")
             print(f"    Total errors:    {monitor.get('total_errors', '?')}")
             print(f"    Rotations:       {monitor.get('total_rotations', '?')}")
@@ -577,7 +596,45 @@ def _cmd_browse(args: argparse.Namespace) -> int:
         else:
             rotate_min = config.browse.rotate_interval_min
 
-        # 7. Create supervisor and run
+        # 7. Optionally create capture session
+        capture_session = None
+        if getattr(args, "capture", False):
+            from proxy_relay.capture import CaptureSession, is_capture_available
+            from proxy_relay.capture.models import DEFAULT_CAPTURE_DOMAINS, CaptureConfig
+
+            if not is_capture_available():
+                print(
+                    "Capture requires optional dependencies: "
+                    "install proxy-relay[capture] (websockets + telemetry-monitor)",
+                    file=sys.stderr,
+                )
+                return 1
+
+            # Build CaptureConfig: CLI --capture-domains overrides config/defaults
+            raw_domains_arg = getattr(args, "capture_domains", None)
+            if raw_domains_arg:
+                domains = frozenset(d.strip() for d in raw_domains_arg.split(",") if d.strip())
+            elif config.capture is not None:
+                domains = config.capture.capture_domains  # type: ignore[union-attr]
+            else:
+                domains = DEFAULT_CAPTURE_DOMAINS
+
+            base_cfg = config.capture if config.capture is not None else CaptureConfig()
+            capture_config = CaptureConfig(
+                db_path=base_cfg.db_path,  # type: ignore[union-attr]
+                domains=domains,
+                redact_headers=base_cfg.redact_headers,  # type: ignore[union-attr]
+                max_body_bytes=base_cfg.max_body_bytes,  # type: ignore[union-attr]
+                cookie_poll_interval_s=base_cfg.cookie_poll_interval_s,  # type: ignore[union-attr]
+                storage_poll_interval_s=base_cfg.storage_poll_interval_s,  # type: ignore[union-attr]
+            )
+            capture_session = CaptureSession(config=capture_config, profile=profile_name)
+            print(
+                f"CDP capture enabled (domains: {', '.join(sorted(domains))}, "
+                f"db: {capture_config.db_path})"
+            )
+
+        # 8. Create supervisor and run
         supervisor = _browse.BrowseSupervisor(
             chromium_path=chromium_path,
             proxy_host=host,
@@ -586,6 +643,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
             relay_pid=relay_pid,
             rotate_interval_min=rotate_min,
             timezone=proxy_tz,
+            capture_session=capture_session,
         )
 
         if rotate_min > 0:
@@ -597,7 +655,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
         return supervisor.run()
 
     finally:
-        # 8. Auto-stop server if we started it
+        # 9. Auto-stop server if we started it
         if auto_started and server_proc is not None:
             _browse.auto_stop_server(server_proc, profile_name)
 

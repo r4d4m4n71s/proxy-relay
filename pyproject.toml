@@ -14,6 +14,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+capture = [
+    "telemetry-monitor",
+    "websockets>=12.0",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -23,6 +27,9 @@ dev = [
 
 [project.scripts]
 proxy-relay = "proxy_relay.cli:main"
+
+[project.entry-points."telemetry_monitor.schema"]
+proxy-relay = "proxy_relay.capture.schema:PROXY_RELAY_SCHEMA"
 
 [tool.hatch.build.targets.wheel]
 packages = ["proxy_relay"]

@@ -11,6 +11,7 @@ Local HTTP/CONNECT proxy that forwards all traffic through an upstream SOCKS5 pr
 - **Connection monitoring** — rolling window quality tracking with auto-rotation
 - **Timezone mismatch detection** — warns if local TZ doesn't match proxy exit country
 - **Supervised browsing** — launch Chromium through the proxy with isolated profiles, health checks, and auto-rotation
+- **CDP traffic capture** — record HTTP requests, responses, cookies, localStorage, and WebSocket frames from target domains via the Chrome DevTools Protocol (optional; requires `websockets` + `telemetry-monitor`)
 - **CLI management** — start/stop/status/rotate/browse via command line or signals
 
 ## Installation
@@ -18,6 +19,9 @@ Local HTTP/CONNECT proxy that forwards all traffic through an upstream SOCKS5 pr
 ```bash
 # From local source (requires proxy-st installed first)
 pip install -e .
+
+# With CDP traffic capture support (websockets + telemetry-monitor)
+pip install -e ".[capture]"
 ```
 
 ## Quick Start
@@ -53,7 +57,7 @@ See [`docs/reference.md`](docs/reference.md) for the full configuration referenc
 | `proxy-relay stop` | Stop the running server |
 | `proxy-relay status` | Show server status and connection stats |
 | `proxy-relay rotate` | Trigger upstream proxy rotation |
-| `proxy-relay browse` | Launch Chromium through the proxy (auto-starts server if needed) |
+| `proxy-relay browse` | Launch Chromium through the proxy (auto-starts server if needed); add `--capture` to record CDP traffic |
 | `proxy-relay --version` | Show version |
 
 All commands accept `--profile` to target a specific proxy-st profile (default: `browse`). Multiple profiles can run simultaneously as separate server instances.
@@ -94,6 +98,31 @@ proxy-relay browse
 On exit: if server was auto-started, it is auto-stopped (SIGTERM → SIGKILL).
          If server was already running, it keeps running.
 ```
+
+## Traffic Capture
+
+When `proxy-relay[capture]` is installed, passing `--capture` to the browse command records HTTP traffic, cookies, localStorage, and WebSocket frames from Chromium via the Chrome DevTools Protocol (CDP).
+
+```bash
+# Capture traffic for the default domains (tidal.com, qobuz.com)
+proxy-relay browse --capture
+
+# Capture traffic for specific domains
+proxy-relay browse --capture --capture-domains api.example.com,cdn.example.com
+```
+
+**How it works:** Chromium is launched with `--remote-debugging-port` on a free local port. A background thread connects to the CDP WebSocket, subscribes to `Network.*` events, and writes structured rows to `~/.config/proxy-relay/capture.db` (SQLite, permissions `0600`) via telemetry-monitor's `BackgroundWriter`.
+
+**What is captured per domain match:**
+- HTTP requests — URL, method, headers (sensitive headers redacted to first 10 chars), POST body (truncated to `max_body_bytes`)
+- HTTP responses — status, MIME type, headers, body, response latency
+- Cookies — polled every `cookie_poll_interval_s` seconds; only new or changed cookies are stored; `httpOnly` values are stored as SHA-256 hashes
+- localStorage / sessionStorage — polled every `storage_poll_interval_s` seconds; only changed or removed keys are stored
+- WebSocket frames — all sent/received frames (not filtered by domain)
+
+Domain matching is suffix-based: configuring `tidal.com` also captures `api.tidal.com` and `listen.tidal.com`.
+
+Capture is configured via the `[capture]` section of `config.toml` or overridden per-session with CLI flags. See [`docs/reference.md`](docs/reference.md) for all parameters.
 
 ## Security
 
