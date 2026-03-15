@@ -490,6 +490,14 @@ def _cmd_browse(args: argparse.Namespace) -> int:
     log_level = config.log_level
     configure_logging(log_level)
 
+    # Validate --rotate-min before doing any work (E-RL15).
+    if args.rotate_min is not None and args.rotate_min < 0:
+        print(
+            f"Invalid --rotate-min {args.rotate_min!r}: must be a non-negative integer",
+            file=sys.stderr,
+        )
+        return 1
+
     # 2. Check if a server is already running for this profile
     auto_started = False
     server_proc = None
@@ -552,7 +560,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
         # 5. Profile dir and timezone
         profile_dir = _browse.get_profile_dir(profile_name, chromium_path=chromium_path)
 
-        country = status_data.get("country", "") if status_data else ""
+        country = (status_data or {}).get("country", "")
         proxy_tz: str | None = None
         if country:
             proxy_tz = get_timezone_for_country(country)

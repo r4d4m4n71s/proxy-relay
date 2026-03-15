@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import signal
+import time
 from collections.abc import Callable
 from dataclasses import asdict
 
@@ -12,6 +13,7 @@ from proxy_relay.handler import handle_connection
 from proxy_relay.logger import get_logger
 from proxy_relay.monitor import ConnectionMonitor, MonitorStats
 from proxy_relay.pidfile import pid_path_for, remove_pid, status_path_for, write_pid, write_status
+from proxy_relay.response import send_error
 from proxy_relay.tunnel import open_tunnel
 from proxy_relay.upstream import UpstreamInfo, UpstreamManager
 
@@ -22,6 +24,9 @@ _HEALTH_TARGET_HOST: str = "icanhazip.com"
 _HEALTH_TARGET_PORT: int = 80
 _HEALTH_MAX_RETRIES: int = 3
 _HEALTH_READ_TIMEOUT: float = 15.0
+
+# Minimum interval between status-file writes triggered by connection close (E-RL5).
+_STATUS_DEBOUNCE_SECS: float = 5.0
 
 
 class ProxyServer:
@@ -60,6 +65,7 @@ class ProxyServer:
         self._active_connections: int = 0
         self._total_connections: int = 0
         self._shutdown_event: asyncio.Event = asyncio.Event()
+        self._last_status_write: float = 0.0
 
     async def start(self) -> None:
         """Start the proxy server.
@@ -168,7 +174,12 @@ class ProxyServer:
     def _signal_shutdown(self) -> None:
         """Signal handler that triggers graceful shutdown."""
         log.info("Shutdown signal received, stopping server...")
-        asyncio.get_running_loop().create_task(self.stop())
+        task = asyncio.get_running_loop().create_task(self.stop())
+        task.add_done_callback(
+            lambda t: log.error("stop() raised an exception: %s", t.exception())
+            if not t.cancelled() and t.exception() is not None
+            else None
+        )
 
     def _signal_rotate(self) -> None:
         """Signal handler (SIGUSR1) that triggers upstream rotation."""
@@ -236,15 +247,31 @@ class ProxyServer:
                 result.writer.write(request.encode("latin-1"))
                 await result.writer.drain()
 
-                raw = await asyncio.wait_for(
-                    result.reader.read(4096),
-                    timeout=_HEALTH_READ_TIMEOUT,
-                )
+                # Read until we find the end-of-headers delimiter and have
+                # enough body to extract the IP.  Two reads (8 KiB) is more
+                # than enough for a health-check response from icanhazip
+                # (E-RL1).  We cap reads to avoid unbounded memory growth
+                # if the server sends excessive data.
+                raw_buf = bytearray()
+                _max_health_reads = 4
+                for _ in range(_max_health_reads):
+                    chunk = await asyncio.wait_for(
+                        result.reader.read(4096),
+                        timeout=_HEALTH_READ_TIMEOUT,
+                    )
+                    if not chunk:
+                        break
+                    raw_buf.extend(chunk)
+                    if b"\r\n\r\n" in raw_buf:
+                        # Headers found — body is included in same or next chunk.
+                        # For icanhazip the body is just an IP address.
+                        break
                 result.writer.close()
+                await result.writer.wait_closed()
                 result = None  # writer closed; prevent double-close in except
 
                 # Parse the HTTP response body (after headers)
-                text = raw.decode("utf-8", errors="replace")
+                text = raw_buf.decode("utf-8", errors="replace")
                 if "\r\n\r\n" in text:
                     body = text.split("\r\n\r\n", 1)[1].strip()
                 else:
@@ -272,6 +299,7 @@ class ProxyServer:
                 if result is not None and hasattr(result, "writer"):
                     try:
                         result.writer.close()
+                        await result.writer.wait_closed()
                     except Exception:
                         pass
                 last_error = str(exc)
@@ -318,34 +346,62 @@ class ProxyServer:
 
         return False, "\n  ".join(lines)
 
-    def _update_status_file(self) -> None:
-        """Write current server status to the status JSON file."""
-        if self._upstream is None:
-            return
+    def _update_status_file(
+        self,
+        stats_dict: dict | None,
+        profile: str,
+        upstream_url: str,
+        country: str | None,
+        active_connections: int,
+        total_connections: int,
+    ) -> None:
+        """Write current server status to the status JSON file.
 
-        stats_dict: dict | None = None
-        if self._monitor is not None:
-            stats_dict = asdict(self._monitor.get_stats())
-
-        profile = ""
-        if self._upstream_manager is not None:
-            profile = self._upstream_manager.profile_name
-
+        All mutable state is passed in as arguments so this method can be
+        safely called from a thread-pool thread without touching shared objects
+        while the event loop may be mutating them (E-RL8).
+        """
         write_status(
             host=self._host,
             port=self._port,
-            upstream_url=self._upstream.url,
-            country=self._upstream.country,
+            upstream_url=upstream_url,
+            country=country,
             profile=profile,
-            active_connections=self._active_connections,
-            total_connections=self._total_connections,
+            active_connections=active_connections,
+            total_connections=total_connections,
             stats=stats_dict,
             path=self._status_path,
         )
 
     async def _update_status_file_async(self) -> None:
-        """Write status file without blocking the event loop."""
-        await asyncio.to_thread(self._update_status_file)
+        """Snapshot event-loop state then write the status file off-thread.
+
+        The snapshot is taken in the event loop (single-threaded context) so
+        that the thread-pool thread receives a stable copy of all values (E-RL8).
+        """
+        if self._upstream is None:
+            return
+
+        # Snapshot all event-loop state before handing off to the thread pool.
+        stats_dict: dict | None = None
+        if self._monitor is not None:
+            stats_dict = asdict(self._monitor.get_stats())
+
+        profile = self._upstream_manager.profile_name if self._upstream_manager is not None else ""
+        upstream_url = self._upstream.url
+        country = self._upstream.country
+        active_connections = self._active_connections
+        total_connections = self._total_connections
+
+        await asyncio.to_thread(
+            self._update_status_file,
+            stats_dict,
+            profile,
+            upstream_url,
+            country,
+            active_connections,
+            total_connections,
+        )
 
     @property
     def monitor_stats(self) -> MonitorStats | None:
@@ -365,7 +421,11 @@ class ProxyServer:
             reader: Client stream reader.
             writer: Client stream writer.
         """
-        assert self._upstream is not None
+        # Guard against connections arriving before start() completes (E-RL3).
+        # assert stripped in -O mode would silently proceed with None upstream.
+        if self._upstream is None:
+            await send_error(writer, 502, "Bad Gateway")
+            return
 
         # Snapshot the upstream reference at connection start so that a
         # concurrent rotation in _do_rotate() does not affect this handler
@@ -395,7 +455,12 @@ class ProxyServer:
                 conn_id,
                 self._active_connections,
             )
-            await self._update_status_file_async()
+            # Debounce status-file writes: at most once every _STATUS_DEBOUNCE_SECS
+            # seconds to avoid excessive I/O when many connections close rapidly (E-RL5).
+            now = time.monotonic()
+            if now - self._last_status_write >= _STATUS_DEBOUNCE_SECS:
+                self._last_status_write = now
+                await self._update_status_file_async()
 
     @property
     def host(self) -> str:

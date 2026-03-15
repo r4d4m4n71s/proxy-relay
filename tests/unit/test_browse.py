@@ -1089,8 +1089,12 @@ class TestServerHealthCheck:
         async def fake_drain():
             pass
 
+        async def fake_wait_closed():
+            pass
+
         mock_result.writer.drain = fake_drain
         mock_result.writer.close = MagicMock()
+        mock_result.writer.wait_closed = fake_wait_closed
 
         async def fake_read(n):
             return b"HTTP/1.1 200 OK\r\n\r\n" + response_body

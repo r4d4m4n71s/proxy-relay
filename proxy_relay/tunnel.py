@@ -180,6 +180,7 @@ async def relay_data(
         finally:
             try:
                 writer.close()
+                await writer.wait_closed()
             except OSError:
                 pass
 

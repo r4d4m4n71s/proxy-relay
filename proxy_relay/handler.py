@@ -143,18 +143,23 @@ async def _read_request(
     Raises:
         TunnelError: If the request is malformed or too large.
     """
-    # Read until we find the empty line marking end of headers
-    header_data = b""
-    while b"\r\n\r\n" not in header_data:
-        if len(header_data) >= _MAX_HEADER_SIZE:
+    # Read until we find the empty line marking end of headers.
+    # Use bytearray to avoid O(n²) concatenation (E-RL9).
+    header_buf = bytearray()
+    while b"\r\n\r\n" not in header_buf:
+        if len(header_buf) >= _MAX_HEADER_SIZE:
             raise TunnelError(
                 f"Request headers exceed maximum size ({_MAX_HEADER_SIZE} bytes)"
             )
-        remaining = _MAX_HEADER_SIZE - len(header_data)
+        remaining = _MAX_HEADER_SIZE - len(header_buf)
         chunk = await reader.read(min(4096, remaining))
         if not chunk:
             raise TunnelError("Client disconnected before sending complete headers")
-        header_data += chunk
+        header_buf.extend(chunk)
+
+    # Convert to bytes for slicing/indexing (bytearray supports all the same ops
+    # but bytes is safer to pass downstream as it is immutable).
+    header_data = bytes(header_buf)
 
     # Split headers from any body data that was read
     header_end = header_data.index(b"\r\n\r\n")
@@ -260,32 +265,53 @@ async def _handle_http(
         client_writer: Client stream writer.
         monitor: Optional connection quality monitor for recording outcomes.
     """
-    # Read remaining body if Content-Length is set
-    body = body_start
-    content_length = 0
-    for name, value in headers:
-        if name.lower() == "content-length":
-            try:
-                content_length = int(value)
-            except ValueError:
-                pass
-            break
+    # Detect Transfer-Encoding: chunked (E-RL2).
+    is_chunked = any(
+        name.lower() == "transfer-encoding" and "chunked" in value.lower()
+        for name, value in headers
+    )
 
-    if content_length > _MAX_BODY_SIZE:
-        log.warning(
-            "Request body too large: Content-Length %d exceeds limit %d",
-            content_length,
-            _MAX_BODY_SIZE,
-        )
-        await send_error(client_writer, 413, "Content Too Large")
-        return
+    if is_chunked:
+        # Dechunk the body before forwarding.  The upstream is a plain HTTP
+        # server reached via SOCKS5, so we forward a Content-Length request.
+        try:
+            body = await _read_chunked_body(client_reader, body_start, _MAX_BODY_SIZE)
+        except TunnelError:
+            await send_error(client_writer, 400, "Bad Request")
+            return
+        if len(body) > _MAX_BODY_SIZE:
+            await send_error(client_writer, 413, "Content Too Large")
+            return
+    else:
+        # Read remaining body if Content-Length is set.
+        # Use bytearray to avoid O(n²) concatenation for large bodies (E-RL10).
+        body_buf = bytearray(body_start)
+        content_length = 0
+        for name, value in headers:
+            if name.lower() == "content-length":
+                try:
+                    content_length = int(value)
+                except ValueError:
+                    pass
+                break
 
-    while content_length > len(body):
-        remaining = content_length - len(body)
-        extra = await client_reader.read(remaining)
-        if not extra:
-            break  # EOF — client disconnected before sending full body
-        body += extra
+        if content_length > _MAX_BODY_SIZE:
+            log.warning(
+                "Request body too large: Content-Length %d exceeds limit %d",
+                content_length,
+                _MAX_BODY_SIZE,
+            )
+            await send_error(client_writer, 413, "Content Too Large")
+            return
+
+        while content_length > len(body_buf):
+            remaining = content_length - len(body_buf)
+            extra = await client_reader.read(remaining)
+            if not extra:
+                break  # EOF — client disconnected before sending full body
+            body_buf.extend(extra)
+
+        body = bytes(body_buf)
 
     forward_start = time.monotonic()
     success = await forward_http_request(
@@ -304,6 +330,83 @@ async def _handle_http(
             await monitor.record_success(forward_latency_ms, url)
         else:
             await monitor.record_error(ConnectionOutcome.TUNNEL_ERROR, url, "HTTP forward failed")
+
+
+async def _read_chunked_body(
+    reader: asyncio.StreamReader,
+    already_read: bytes,
+    max_size: int,
+) -> bytes:
+    """Read and dechunk a Transfer-Encoding: chunked request body (E-RL2).
+
+    Implements basic chunked decoding per RFC 7230 §4.1.  Chunk extensions
+    and trailers are ignored (stripped).  Raises ``TunnelError`` on malformed
+    chunk framing; returns the assembled body bytes on success.
+
+    Args:
+        reader: Client stream reader (positioned after headers).
+        already_read: Any body bytes already read past the headers.
+        max_size: Maximum total assembled body size.
+
+    Returns:
+        Assembled dechunked body bytes.
+
+    Raises:
+        TunnelError: If chunk framing is malformed or the body exceeds max_size.
+    """
+    buf = bytearray(already_read)
+    result = bytearray()
+
+    async def _read_line() -> bytes:
+        """Read a CRLF-terminated line, pulling from buf or reader as needed."""
+        while b"\r\n" not in buf:
+            chunk = await reader.read(4096)
+            if not chunk:
+                raise TunnelError("Unexpected EOF while reading chunked body")
+            buf.extend(chunk)
+        idx = buf.index(b"\r\n")
+        line = bytes(buf[:idx])
+        del buf[: idx + 2]
+        return line
+
+    async def _read_exactly(n: int) -> bytes:
+        """Read exactly n bytes, pulling from buf or reader as needed."""
+        while len(buf) < n:
+            chunk = await reader.read(4096)
+            if not chunk:
+                raise TunnelError("Unexpected EOF while reading chunk data")
+            buf.extend(chunk)
+        data = bytes(buf[:n])
+        del buf[:n]
+        return data
+
+    while True:
+        size_line = await _read_line()
+        # Strip chunk extensions (e.g. "1a; ext=value" -> "1a")
+        size_str = size_line.split(b";", 1)[0].strip()
+        try:
+            chunk_size = int(size_str, 16)
+        except ValueError as exc:
+            raise TunnelError(f"Malformed chunk size: {size_str!r}") from exc
+
+        if chunk_size == 0:
+            # Last chunk — consume trailing CRLF (trailers are ignored)
+            break
+
+        if len(result) + chunk_size > max_size:
+            raise TunnelError(
+                f"Chunked body exceeds maximum size ({max_size} bytes)"
+            )
+
+        data = await _read_exactly(chunk_size)
+        result.extend(data)
+
+        # Each chunk is followed by CRLF
+        crlf = await _read_exactly(2)
+        if crlf != b"\r\n":
+            raise TunnelError(f"Expected CRLF after chunk data, got {crlf!r}")
+
+    return bytes(result)
 
 
 def _parse_connect_target(target: str) -> tuple[str, int]:

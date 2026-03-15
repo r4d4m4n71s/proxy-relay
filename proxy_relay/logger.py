@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 
 _CONFIGURED = False
+_CONFIGURE_LOCK = threading.Lock()
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -38,18 +40,19 @@ def configure_logging(level: str = "INFO") -> None:
     numeric_level = getattr(logging, level.upper(), logging.INFO)
     root = logging.getLogger("proxy_relay")
 
-    if _CONFIGURED:
-        if root.level != numeric_level:
-            root.warning(
-                "configure_logging called again with level=%s (was %s) — updating",
-                level.upper(),
-                logging.getLevelName(root.level),
-            )
-            root.setLevel(numeric_level)
-        return
+    with _CONFIGURE_LOCK:
+        if _CONFIGURED:
+            if root.level != numeric_level:
+                root.warning(
+                    "configure_logging called again with level=%s (was %s) — updating",
+                    level.upper(),
+                    logging.getLevelName(root.level),
+                )
+                root.setLevel(numeric_level)
+            return
 
-    _CONFIGURED = True
-    root.setLevel(numeric_level)
+        _CONFIGURED = True
+        root.setLevel(numeric_level)
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(logging.DEBUG)

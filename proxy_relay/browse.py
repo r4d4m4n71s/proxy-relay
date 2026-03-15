@@ -843,7 +843,12 @@ class BrowseSupervisor:
         log.debug("Launching Chromium: %s", " ".join(cmd))
 
         try:
-            return subprocess.Popen(cmd, env=env)  # noqa: S603
+            return subprocess.Popen(  # noqa: S603
+                cmd,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         except OSError as exc:
             raise BrowseError(f"Failed to launch Chromium at {self._chromium_path}: {exc}") from exc
 

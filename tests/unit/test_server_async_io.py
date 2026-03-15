@@ -91,7 +91,7 @@ class TestUpdateStatusFileAsync:
     """_update_status_file_async() wraps the sync method via asyncio.to_thread."""
 
     async def test_delegates_to_sync_via_to_thread(self) -> None:
-        """_update_status_file_async must call asyncio.to_thread(_update_status_file)."""
+        """_update_status_file_async must call asyncio.to_thread(_update_status_file, ...)."""
         mgr = _make_manager()
         server = ProxyServer(host="127.0.0.1", port=18090, upstream_manager=mgr)
         server._upstream = _make_upstream()
@@ -99,7 +99,10 @@ class TestUpdateStatusFileAsync:
         with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_to_thread:
             await server._update_status_file_async()
 
-        mock_to_thread.assert_called_once_with(server._update_status_file)
+        # E-RL8: _update_status_file_async now snapshots state and passes args
+        mock_to_thread.assert_called_once()
+        call_args = mock_to_thread.call_args
+        assert call_args.args[0] == server._update_status_file
 
     async def test_async_wrapper_exists_and_is_coroutine(self) -> None:
         """_update_status_file_async must be an async method (awaitable)."""
@@ -118,7 +121,15 @@ class TestUpdateStatusFileAsync:
         server._upstream = _make_upstream()
 
         with patch("proxy_relay.server.write_status") as mock_write:
-            server._update_status_file()
+            # E-RL8: _update_status_file now requires explicit args (snapshotted state)
+            server._update_status_file(
+                stats_dict=None,
+                profile="browse",
+                upstream_url=server._upstream.url,
+                country=server._upstream.country,
+                active_connections=0,
+                total_connections=0,
+            )
 
         mock_write.assert_called_once()
 
