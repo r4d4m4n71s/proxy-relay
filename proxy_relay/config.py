@@ -268,12 +268,18 @@ def _parse_config(data: dict) -> RelayConfig:
         raw_db_path = capture_data.get("db_path")
         db_path = _Path(raw_db_path) if raw_db_path is not None else None
 
+        raw_report_dir = capture_data.get("report_dir")
+        report_dir = _Path(raw_report_dir) if raw_report_dir is not None else None
+
         capture_cfg = CaptureConfig(
             db_path=db_path,
             domains=domains,
             max_body_bytes=int(capture_data.get("max_body_bytes", 65_536)),
             cookie_poll_interval_s=float(capture_data.get("cookie_poll_interval_s", 30.0)),
             storage_poll_interval_s=float(capture_data.get("storage_poll_interval_s", 60.0)),
+            report_dir=report_dir,
+            auto_analyze=bool(capture_data.get("auto_analyze", True)),
+            auto_report=bool(capture_data.get("auto_report", False)),
         )
 
     config = RelayConfig(

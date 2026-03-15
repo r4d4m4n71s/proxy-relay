@@ -500,6 +500,28 @@ class CaptureSession:
                 log.debug("Error stopping background writer", exc_info=True)
             self._writer = None
 
+        # Run post-capture analysis
+        if self._config.auto_analyze or self._config.auto_report:
+            try:
+                from proxy_relay.capture.analyzer import analyze as _analyze
+
+                _report = _analyze(self._config.resolved_db_path())
+
+                if self._config.auto_analyze:
+                    from proxy_relay.capture.analyzer import print_report as _print_analysis
+
+                    _print_analysis(_report)
+
+                if self._config.auto_report:
+                    from proxy_relay.capture.analyzer import write_report as _write_report
+
+                    _path = _write_report(
+                        _report, output_dir=self._config.resolved_report_dir()
+                    )
+                    log.info("Analysis report written to %s", _path)
+            except Exception:
+                log.debug("Post-capture analysis skipped", exc_info=True)
+
         # Secure the database file
         db_path = self._config.resolved_db_path()
         if db_path.exists():

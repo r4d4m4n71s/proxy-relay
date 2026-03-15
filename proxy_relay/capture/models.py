@@ -7,6 +7,7 @@ from pathlib import Path
 # NOTE: Do NOT import from proxy_relay.config here — that would create a
 # circular import because config.py lazily imports CaptureConfig from this module.
 DEFAULT_CAPTURE_DB: Path = Path.home() / ".config" / "proxy-relay" / "capture.db"
+DEFAULT_REPORT_DIR: Path = Path.home() / ".config" / "proxy-relay"
 
 DEFAULT_CAPTURE_DOMAINS: frozenset[str] = frozenset({"tidal.com", "qobuz.com"})
 
@@ -56,6 +57,10 @@ class CaptureConfig:
         max_body_bytes: Maximum UTF-8 bytes of request/response body stored.
         cookie_poll_interval_s: Seconds between ``Network.getAllCookies`` polls.
         storage_poll_interval_s: Seconds between localStorage/sessionStorage polls.
+        report_dir: Directory for analysis report files.  ``None`` means
+            auto-resolve to ``DEFAULT_REPORT_DIR``.
+        auto_analyze: If ``True``, run console analysis after capture stops.
+        auto_report: If ``True``, write a markdown report file after capture stops.
     """
 
     db_path: Path | None = None
@@ -64,7 +69,14 @@ class CaptureConfig:
     max_body_bytes: int = MAX_BODY_BYTES
     cookie_poll_interval_s: float = COOKIE_POLL_INTERVAL_S
     storage_poll_interval_s: float = STORAGE_POLL_INTERVAL_S
+    report_dir: Path | None = None
+    auto_analyze: bool = True
+    auto_report: bool = False
 
     def resolved_db_path(self) -> Path:
         """Return the effective database path, falling back to DEFAULT_CAPTURE_DB."""
         return self.db_path if self.db_path is not None else DEFAULT_CAPTURE_DB
+
+    def resolved_report_dir(self) -> Path:
+        """Return the effective report directory, falling back to DEFAULT_REPORT_DIR."""
+        return self.report_dir if self.report_dir is not None else DEFAULT_REPORT_DIR

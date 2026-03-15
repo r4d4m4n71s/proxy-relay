@@ -199,6 +199,36 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── analyze ────────────────────────────────────────────────────────
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Analyze a CDP capture database",
+    )
+    analyze_parser.add_argument(
+        "--db",
+        type=str,
+        default=None,
+        help="Path to capture.db (default: ~/.config/proxy-relay/capture.db)",
+    )
+    analyze_parser.add_argument(
+        "--report",
+        action="store_true",
+        default=False,
+        help="Write a detailed markdown report file",
+    )
+    analyze_parser.add_argument(
+        "--report-dir",
+        type=str,
+        default=None,
+        help="Directory for report file (default: ~/.config/proxy-relay/)",
+    )
+    analyze_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Include full JSON key inventories in API surface analysis",
+    )
+
     return parser
 
 
@@ -627,6 +657,9 @@ def _cmd_browse(args: argparse.Namespace) -> int:
                 max_body_bytes=base_cfg.max_body_bytes,  # type: ignore[union-attr]
                 cookie_poll_interval_s=base_cfg.cookie_poll_interval_s,  # type: ignore[union-attr]
                 storage_poll_interval_s=base_cfg.storage_poll_interval_s,  # type: ignore[union-attr]
+                report_dir=base_cfg.report_dir,  # type: ignore[union-attr]
+                auto_analyze=base_cfg.auto_analyze,  # type: ignore[union-attr]
+                auto_report=base_cfg.auto_report,  # type: ignore[union-attr]
             )
             capture_session = CaptureSession(config=capture_config, profile=profile_name)
             print(
@@ -660,6 +693,53 @@ def _cmd_browse(args: argparse.Namespace) -> int:
             _browse.auto_stop_server(server_proc, profile_name)
 
 
+def _cmd_analyze(args: argparse.Namespace) -> int:
+    """Execute the 'analyze' subcommand.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        Exit code (0 for success, non-zero for error).
+    """
+    from proxy_relay.capture.analyzer import analyze, write_report
+    from proxy_relay.capture.analyzer import print_report as print_analysis
+    from proxy_relay.capture.models import DEFAULT_CAPTURE_DB, DEFAULT_REPORT_DIR
+
+    db_path = Path(args.db) if args.db else DEFAULT_CAPTURE_DB
+    if not db_path.exists():
+        print(f"Capture database not found: {db_path}", file=sys.stderr)
+        return 1
+
+    try:
+        report = analyze(db_path, verbose=args.verbose)
+    except Exception as exc:
+        print(f"Analysis failed: {exc}", file=sys.stderr)
+        return 1
+
+    print_analysis(report)
+
+    if args.report:
+        if args.report_dir:
+            report_dir = Path(args.report_dir)
+        else:
+            # Use config's report_dir if available, else default
+            try:
+                from proxy_relay.config import load_config
+
+                cfg = load_config()
+                capture_cfg = cfg.capture
+                report_dir = (
+                    capture_cfg.resolved_report_dir() if capture_cfg else DEFAULT_REPORT_DIR
+                )
+            except Exception:
+                report_dir = DEFAULT_REPORT_DIR
+        report_path = write_report(report, output_dir=report_dir)
+        print(f"\nReport written to: {report_path}")
+
+    return 0
+
+
 def main() -> None:
     """Entry point for the proxy-relay CLI."""
     parser = build_parser()
@@ -676,6 +756,7 @@ def main() -> None:
         "rotate": _cmd_rotate,
         "profile-clean": _cmd_profile_clean,
         "browse": _cmd_browse,
+        "analyze": _cmd_analyze,
     }
 
     handler = dispatch.get(args.command)
