@@ -7,7 +7,7 @@ Repo: https://github.com/r4d4m4n71s/proxy-relay (private)
 All persistent state: `~/.config/proxy-relay/` (config.toml, PID files, status files, browser profiles)
 
 ## Project status
-**420 tests on `main`** | 21 production modules, 23 test files. S63 complete: async I/O refactor in `server.py` (C4-17). CDP capture subpackage added (5 modules, 120 new tests).
+**432 tests on `main`** | 21 production modules, 23 test files. S63 complete: async I/O refactor in `server.py` (C4-17). CDP capture subpackage added (5 modules, 132 tests) — smoke-tested with 165 events from tidal.com.
 
 ### Async I/O refactor (S63 — C4-17)
 4 blocking I/O paths in `server.py` are now wrapped with `asyncio.to_thread()`:
