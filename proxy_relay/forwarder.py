@@ -194,16 +194,16 @@ async def _send_error_response(
         reason: HTTP reason phrase.
     """
     body = f"{status_code} {reason}\r\n"
-    response = (
+    body_bytes = body.encode("latin-1")
+    response_head = (
         f"HTTP/1.1 {status_code} {reason}\r\n"
         f"Content-Type: text/plain\r\n"
-        f"Content-Length: {len(body)}\r\n"
+        f"Content-Length: {len(body_bytes)}\r\n"
         f"Connection: close\r\n"
         f"\r\n"
-        f"{body}"
-    )
+    ).encode("latin-1")
     try:
-        writer.write(response.encode("latin-1"))
+        writer.write(response_head + body_bytes)
         await writer.drain()
     except OSError:
         pass

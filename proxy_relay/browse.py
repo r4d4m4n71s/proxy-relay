@@ -28,7 +28,13 @@ from pathlib import Path
 from proxy_relay.config import CONFIG_DIR
 from proxy_relay.exceptions import BrowseError
 from proxy_relay.logger import get_logger
-from proxy_relay.pidfile import is_process_running, read_status, send_signal, status_path_for
+from proxy_relay.pidfile import (
+    _validate_profile_name,
+    is_process_running,
+    read_status,
+    send_signal,
+    status_path_for,
+)
 
 log = get_logger(__name__)
 
@@ -426,6 +432,8 @@ def get_profile_dir(profile_name: str, chromium_path: Path | None = None) -> Pat
     Returns:
         Path to the profile directory (guaranteed to exist).
     """
+    _validate_profile_name(profile_name)
+
     if chromium_path is not None and _is_snap_chromium(chromium_path):
         base = _SNAP_PROFILES_DIR
         log.debug("Snap Chromium detected — using %s for profiles", base)
@@ -517,6 +525,8 @@ def delete_profile(profile_name: str) -> list[str]:
     Raises:
         BrowseError: If the profile does not exist in any location.
     """
+    _validate_profile_name(profile_name)
+
     removed: list[str] = []
     snap_profile = _SNAP_PROFILES_DIR / profile_name
     default_profile = BROWSER_PROFILES_DIR / profile_name
