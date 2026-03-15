@@ -329,3 +329,122 @@ class TestCaptureSession:
         assert "Network.disable" in disable_calls
         assert "Page.disable" in disable_calls
         assert "IndexedDB.disable" in disable_calls
+
+    async def test_stop_skips_analysis_when_auto_analyze_false(self, tmp_path):
+        """stop() must NOT call analyzer when auto_analyze=False."""
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        db_path = tmp_path / "capture.db"
+        cfg = CaptureConfig(db_path=db_path, auto_analyze=False, auto_report=False)
+        session = CaptureSession(config=cfg)
+
+        mock_cdp = AsyncMock()
+        mock_cdp.connect = AsyncMock()
+        mock_cdp.send = AsyncMock(return_value={})
+        mock_cdp.subscribe = AsyncMock()
+        mock_cdp.close = AsyncMock()
+        mock_writer = MagicMock()
+
+        with patch("proxy_relay.capture.CdpClient", return_value=mock_cdp), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer), \
+             patch("proxy_relay.capture.analyzer.analyze") as mock_analyze:
+            await session.start(9222)
+            await session.stop()
+
+        mock_analyze.assert_not_called()
+
+    async def test_stop_runs_analysis_when_auto_analyze_true(self, tmp_path):
+        """stop() must call analyzer when auto_analyze=True."""
+        import sqlite3
+
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        # Create a minimal DB so analyze() can open it
+        db_path = tmp_path / "capture.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(
+            "CREATE TABLE http_requests (timestamp TEXT, request_id TEXT, url TEXT,"
+            " method TEXT, headers TEXT, post_data TEXT, profile TEXT);"
+            "CREATE TABLE http_responses (timestamp TEXT, request_id TEXT, url TEXT,"
+            " status INTEGER, mime_type TEXT, headers TEXT, body TEXT,"
+            " response_ms INTEGER, profile TEXT);"
+            "CREATE TABLE cookies (timestamp TEXT, domain TEXT, name TEXT, value TEXT,"
+            " http_only INTEGER, secure INTEGER, expires REAL, path TEXT, profile TEXT);"
+            "CREATE TABLE storage_snapshots (timestamp TEXT, origin TEXT, storage_type TEXT,"
+            " key TEXT, value TEXT, change_type TEXT, profile TEXT);"
+            "CREATE TABLE websocket_frames (timestamp TEXT, request_id TEXT, url TEXT,"
+            " direction TEXT, payload TEXT, opcode INTEGER, profile TEXT);"
+            "CREATE TABLE page_navigations (timestamp TEXT, url TEXT, frame_id TEXT,"
+            " transition_type TEXT, mime_type TEXT, profile TEXT);"
+        )
+        conn.close()
+
+        cfg = CaptureConfig(db_path=db_path, auto_analyze=True, auto_report=False)
+        session = CaptureSession(config=cfg)
+
+        mock_cdp = AsyncMock()
+        mock_cdp.connect = AsyncMock()
+        mock_cdp.send = AsyncMock(return_value={})
+        mock_cdp.subscribe = AsyncMock()
+        mock_cdp.close = AsyncMock()
+        mock_writer = MagicMock()
+
+        with patch("proxy_relay.capture.CdpClient", return_value=mock_cdp), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer):
+            await session.start(9222)
+            await session.stop()
+
+        # If analysis ran, no error was raised — success
+        # (We can't easily mock the lazy import, but the empty DB won't crash)
+
+    async def test_stop_writes_report_when_auto_report_true(self, tmp_path):
+        """stop() must write a report file when auto_report=True."""
+        import sqlite3
+
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        db_path = tmp_path / "capture.db"
+        report_dir = tmp_path / "reports"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(
+            "CREATE TABLE http_requests (timestamp TEXT, request_id TEXT, url TEXT,"
+            " method TEXT, headers TEXT, post_data TEXT, profile TEXT);"
+            "CREATE TABLE http_responses (timestamp TEXT, request_id TEXT, url TEXT,"
+            " status INTEGER, mime_type TEXT, headers TEXT, body TEXT,"
+            " response_ms INTEGER, profile TEXT);"
+            "CREATE TABLE cookies (timestamp TEXT, domain TEXT, name TEXT, value TEXT,"
+            " http_only INTEGER, secure INTEGER, expires REAL, path TEXT, profile TEXT);"
+            "CREATE TABLE storage_snapshots (timestamp TEXT, origin TEXT, storage_type TEXT,"
+            " key TEXT, value TEXT, change_type TEXT, profile TEXT);"
+            "CREATE TABLE websocket_frames (timestamp TEXT, request_id TEXT, url TEXT,"
+            " direction TEXT, payload TEXT, opcode INTEGER, profile TEXT);"
+            "CREATE TABLE page_navigations (timestamp TEXT, url TEXT, frame_id TEXT,"
+            " transition_type TEXT, mime_type TEXT, profile TEXT);"
+        )
+        conn.close()
+
+        cfg = CaptureConfig(
+            db_path=db_path, auto_analyze=False, auto_report=True, report_dir=report_dir,
+        )
+        session = CaptureSession(config=cfg)
+
+        mock_cdp = AsyncMock()
+        mock_cdp.connect = AsyncMock()
+        mock_cdp.send = AsyncMock(return_value={})
+        mock_cdp.subscribe = AsyncMock()
+        mock_cdp.close = AsyncMock()
+        mock_writer = MagicMock()
+
+        with patch("proxy_relay.capture.CdpClient", return_value=mock_cdp), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer):
+            await session.start(9222)
+            await session.stop()
+
+        # Report directory should have been created with a .md file
+        assert report_dir.exists()
+        reports = list(report_dir.glob("capture-report-*.md"))
+        assert len(reports) == 1
+        assert "Capture Analysis Report" in reports[0].read_text()

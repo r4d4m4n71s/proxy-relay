@@ -500,6 +500,23 @@ class CaptureSession:
                 log.debug("Error stopping background writer", exc_info=True)
             self._writer = None
 
+        # Log capture summary for diagnostics
+        db_path = self._config.resolved_db_path()
+        if db_path.exists():
+            try:
+                import sqlite3 as _sqlite3
+
+                _conn = _sqlite3.connect(str(db_path))
+                _req_count = _conn.execute("SELECT count(*) FROM http_requests").fetchone()[0]
+                _resp_count = _conn.execute("SELECT count(*) FROM http_responses").fetchone()[0]
+                _conn.close()
+                log.info(
+                    "Capture DB: %d requests, %d responses written to %s",
+                    _req_count, _resp_count, db_path,
+                )
+            except Exception:
+                log.debug("Could not read capture DB row counts", exc_info=True)
+
         # Run post-capture analysis
         if self._config.auto_analyze or self._config.auto_report:
             try:

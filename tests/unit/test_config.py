@@ -168,3 +168,86 @@ class TestAntiLeakConfig:
 
         alc = AntiLeakConfig()
         assert alc.warn_timezone_mismatch is True
+
+
+class TestCaptureConfig:
+    """Test CaptureConfig defaults and TOML parsing."""
+
+    def test_defaults(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig()
+        assert cfg.auto_analyze is True
+        assert cfg.auto_report is False
+        assert cfg.report_dir is None
+        assert cfg.db_path is None
+
+    def test_resolved_report_dir_default(self):
+        from proxy_relay.capture.models import DEFAULT_REPORT_DIR, CaptureConfig
+
+        cfg = CaptureConfig()
+        assert cfg.resolved_report_dir() == DEFAULT_REPORT_DIR
+
+    def test_resolved_report_dir_custom(self, tmp_path):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig(report_dir=tmp_path / "reports")
+        assert cfg.resolved_report_dir() == tmp_path / "reports"
+
+    def test_capture_toml_auto_analyze_false(self, tmp_path):
+        from proxy_relay.config import RelayConfig
+
+        path = tmp_path / "config.toml"
+        path.write_text(
+            "[capture]\n"
+            "auto_analyze = false\n"
+        )
+        cfg = RelayConfig.load(path)
+        assert cfg.capture is not None
+        assert cfg.capture.auto_analyze is False  # type: ignore[union-attr]
+
+    def test_capture_toml_auto_report_true(self, tmp_path):
+        from proxy_relay.config import RelayConfig
+
+        path = tmp_path / "config.toml"
+        path.write_text(
+            "[capture]\n"
+            "auto_report = true\n"
+        )
+        cfg = RelayConfig.load(path)
+        assert cfg.capture is not None
+        assert cfg.capture.auto_report is True  # type: ignore[union-attr]
+
+    def test_capture_toml_report_dir(self, tmp_path):
+        from proxy_relay.config import RelayConfig
+
+        path = tmp_path / "config.toml"
+        path.write_text(
+            "[capture]\n"
+            'report_dir = "/tmp/my-reports"\n'
+        )
+        cfg = RelayConfig.load(path)
+        assert cfg.capture is not None
+        assert cfg.capture.report_dir == Path("/tmp/my-reports")  # type: ignore[union-attr]
+
+    def test_capture_toml_defaults_when_omitted(self, tmp_path):
+        from proxy_relay.config import RelayConfig
+
+        path = tmp_path / "config.toml"
+        path.write_text(
+            "[capture]\n"
+            'domains = ["tidal.com"]\n'
+        )
+        cfg = RelayConfig.load(path)
+        assert cfg.capture is not None
+        assert cfg.capture.auto_analyze is True  # type: ignore[union-attr]
+        assert cfg.capture.auto_report is False  # type: ignore[union-attr]
+        assert cfg.capture.report_dir is None  # type: ignore[union-attr]
+
+    def test_no_capture_section_returns_none(self, tmp_path):
+        from proxy_relay.config import RelayConfig
+
+        path = tmp_path / "config.toml"
+        path.write_text('log_level = "INFO"\n')
+        cfg = RelayConfig.load(path)
+        assert cfg.capture is None

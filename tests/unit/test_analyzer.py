@@ -428,6 +428,19 @@ class TestOutput:
         assert "# Capture Analysis Report" in content
         assert "API Surface Map" in content
 
+    def test_write_report_uses_default_report_dir(self, populated_db: Path, tmp_path: Path):
+        from unittest.mock import patch as _patch
+
+        from proxy_relay.capture.analyzer import analyze, write_report
+
+        report = analyze(populated_db)
+        # Redirect DEFAULT_REPORT_DIR to tmp_path so we don't write to real config dir
+        with _patch("proxy_relay.capture.models.DEFAULT_REPORT_DIR", tmp_path):
+            path = write_report(report)
+
+        assert path.parent == tmp_path
+        assert path.exists()
+
 
 # ---------------------------------------------------------------------------
 # 9. Helpers

@@ -47,16 +47,28 @@ class CdpClient:
 
     # ── Public API ────────────────────────────────────────────────────────
 
-    async def connect(self, port: int, timeout: float = 10.0) -> None:
+    async def connect(
+        self,
+        port: int,
+        timeout: float = 10.0,
+        max_retries: int = 10,
+        retry_delay: float = 1.0,
+    ) -> None:
         """Connect to a Chromium remote debugging endpoint.
 
-        Fetches ``/json/version`` over HTTP to discover the WebSocket
-        debugger URL, then opens a WebSocket connection and starts the
-        background receive loop.
+        Fetches ``/json`` (then ``/json/version``) over HTTP to discover the
+        WebSocket debugger URL, then opens a WebSocket connection and starts
+        the background receive loop.
+
+        Chromium may take several seconds to open its debug port after launch,
+        so the discovery phase retries up to *max_retries* times with
+        *retry_delay* seconds between attempts.
 
         Args:
             port: The ``--remote-debugging-port`` Chromium was started with.
-            timeout: Seconds to wait for the HTTP discovery call.
+            timeout: Seconds to wait for each HTTP discovery call.
+            max_retries: Maximum number of discovery attempts before giving up.
+            retry_delay: Seconds to wait between retries.
 
         Raises:
             CaptureError: If the endpoint is unreachable or the response is
@@ -79,44 +91,59 @@ class CdpClient:
                     "websockets is not installed — install proxy-relay[capture]"
                 ) from exc
 
-        # Prefer a page-level target (has Network/Page/Storage domains)
-        # over the browser-level target (only has Browser/Target domains).
+        # Retry loop: Chromium needs time to open its debug port after launch.
         ws_url: str | None = None
+        last_error: Exception | None = None
 
-        # 1. Try /json to find a page target
-        targets_url = f"http://127.0.0.1:{port}/json"
-        log.debug("Fetching CDP targets from %s", targets_url)
-        try:
-            req = urllib.request.Request(targets_url)  # noqa: S310
-            with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-                targets: list[dict[str, Any]] = json.loads(resp.read().decode("utf-8"))
-            for target in targets:
-                if target.get("type") == "page" and target.get("webSocketDebuggerUrl"):
-                    ws_url = target["webSocketDebuggerUrl"]
-                    log.debug("Using page target: %s", target.get("url", "?"))
-                    break
-        except Exception:
-            log.debug("Could not fetch /json targets", exc_info=True)
+        for attempt in range(1, max_retries + 1):
+            ws_url = None
 
-        # 2. Fallback to /json/version (browser-level — limited domain support)
-        if not ws_url:
-            version_url = f"http://127.0.0.1:{port}/json/version"
-            log.debug("No page target found, falling back to %s", version_url)
+            # 1. Try /json to find a page target
+            targets_url = f"http://127.0.0.1:{port}/json"
+            log.debug("CDP discovery attempt %d/%d: %s", attempt, max_retries, targets_url)
             try:
-                req = urllib.request.Request(version_url)  # noqa: S310
+                req = urllib.request.Request(targets_url)  # noqa: S310
                 with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-                    version_data: dict[str, Any] = json.loads(resp.read().decode("utf-8"))
-                ws_url = version_data.get("webSocketDebuggerUrl")
-            except urllib.error.URLError as exc:
-                raise CaptureError(
-                    f"Could not reach Chromium CDP at port {port}: {exc.reason}"
-                ) from exc
-            except Exception as exc:
-                raise CaptureError(f"CDP discovery failed at port {port}: {exc}") from exc
+                    targets: list[dict[str, Any]] = json.loads(resp.read().decode("utf-8"))
+                for target in targets:
+                    if target.get("type") == "page" and target.get("webSocketDebuggerUrl"):
+                        ws_url = target["webSocketDebuggerUrl"]
+                        log.debug("Using page target: %s", target.get("url", "?"))
+                        break
+            except Exception:
+                log.debug("Could not fetch /json targets (attempt %d)", attempt, exc_info=True)
+
+            # 2. Fallback to /json/version (browser-level — limited domain support)
+            if not ws_url:
+                version_url = f"http://127.0.0.1:{port}/json/version"
+                log.debug("No page target found, falling back to %s", version_url)
+                try:
+                    req = urllib.request.Request(version_url)  # noqa: S310
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                        version_data: dict[str, Any] = json.loads(resp.read().decode("utf-8"))
+                    ws_url = version_data.get("webSocketDebuggerUrl")
+                except (urllib.error.URLError, OSError) as exc:
+                    last_error = exc
+                except Exception as exc:
+                    raise CaptureError(f"CDP discovery failed at port {port}: {exc}") from exc
+
+            if ws_url:
+                break
+
+            # Wait before retrying
+            if attempt < max_retries:
+                log.debug("CDP not ready, retrying in %.1fs...", retry_delay)
+                await asyncio.sleep(retry_delay)
 
         if not ws_url:
+            if last_error and isinstance(last_error, urllib.error.URLError):
+                raise CaptureError(
+                    f"Could not reach Chromium CDP at port {port} after {max_retries} attempts: "
+                    f"{last_error.reason}"
+                ) from last_error
             raise CaptureError(
-                f"No webSocketDebuggerUrl found from port {port} (tried /json and /json/version)"
+                f"No webSocketDebuggerUrl found from port {port} after {max_retries} attempts "
+                f"(tried /json and /json/version)"
             )
 
         log.debug("Connecting to CDP WebSocket: %s", ws_url)

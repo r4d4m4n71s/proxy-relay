@@ -103,7 +103,7 @@ class TestCdpClientConnect:
         with patch("urllib.request.urlopen", side_effect=timeout_urlopen):
             client = CdpClient()
             with pytest.raises(CaptureError):
-                await client.connect(9222)
+                await client.connect(9222, max_retries=1)
 
     async def test_connect_url_error_raises_capture_error(self):
         """connect() wraps URLError as CaptureError."""
@@ -115,7 +115,7 @@ class TestCdpClientConnect:
         with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("refused")):
             client = CdpClient()
             with pytest.raises(CaptureError):
-                await client.connect(9222)
+                await client.connect(9222, max_retries=1)
 
 
 # ---------------------------------------------------------------------------
