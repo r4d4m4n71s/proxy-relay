@@ -14,6 +14,7 @@ import time
 
 from proxy_relay.exceptions import TunnelError
 from proxy_relay.logger import get_logger
+from proxy_relay.response import send_error
 from proxy_relay.sanitizer import sanitize_headers
 from proxy_relay.tunnel import open_tunnel
 from proxy_relay.upstream import UpstreamInfo
@@ -118,11 +119,11 @@ async def forward_http_request(
         raise
     except asyncio.TimeoutError:
         log.warning("Response timeout for %s %s", method, url)
-        await _send_error_response(client_writer, 504, "Gateway Timeout")
+        await send_error(client_writer, 504, "Gateway Timeout")
         return False
     except Exception as exc:
         log.warning("Forward error for %s %s: %s", method, url, exc)
-        await _send_error_response(client_writer, 502, "Bad Gateway")
+        await send_error(client_writer, 502, "Bad Gateway")
         return False
     finally:
         if remote_writer is not None:
@@ -181,29 +182,3 @@ def _parse_absolute_url(url: str) -> tuple[str, int, str]:
     return host, port, path
 
 
-async def _send_error_response(
-    writer: asyncio.StreamWriter,
-    status_code: int,
-    reason: str,
-) -> None:
-    """Send a minimal HTTP error response to the client.
-
-    Args:
-        writer: Client stream writer.
-        status_code: HTTP status code.
-        reason: HTTP reason phrase.
-    """
-    body = f"{status_code} {reason}\r\n"
-    body_bytes = body.encode("latin-1")
-    response_head = (
-        f"HTTP/1.1 {status_code} {reason}\r\n"
-        f"Content-Type: text/plain\r\n"
-        f"Content-Length: {len(body_bytes)}\r\n"
-        f"Connection: close\r\n"
-        f"\r\n"
-    ).encode("latin-1")
-    try:
-        writer.write(response_head + body_bytes)
-        await writer.drain()
-    except OSError:
-        pass

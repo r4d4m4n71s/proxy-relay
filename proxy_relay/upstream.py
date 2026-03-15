@@ -1,6 +1,7 @@
 """Upstream proxy manager wrapping proxy-st for SOCKS5 URL resolution."""
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
@@ -54,6 +55,11 @@ class UpstreamManager:
         self._config = None  # Lazy-loaded proxy-st AppConfig
         self._session_store = None  # Lazy-loaded SessionStore
         self._current: UpstreamInfo | None = None
+        # Protects _current against concurrent reads/writes from multiple OS
+        # threads.  rotate() and get_upstream() are both called via
+        # asyncio.to_thread(), so they execute in separate thread-pool threads
+        # and need explicit synchronisation.
+        self._lock: threading.Lock = threading.Lock()
 
     def _ensure_loaded(self) -> None:
         """Lazy-load proxy-st config and session store on first use.
@@ -149,7 +155,7 @@ class UpstreamManager:
         assert self._config is not None
         profile = self._config.profiles[self._profile_name]
 
-        self._current = UpstreamInfo(
+        new_info = UpstreamInfo(
             host=parsed.hostname,
             port=parsed.port,
             username=parsed.username or "",
@@ -158,13 +164,16 @@ class UpstreamManager:
             country=profile.country,
         )
 
+        with self._lock:
+            self._current = new_info
+
         log.info(
             "Upstream resolved: %s:%d (country=%s)",
-            self._current.host,
-            self._current.port,
-            self._current.country or "any",
+            new_info.host,
+            new_info.port,
+            new_info.country or "any",
         )
-        return self._current
+        return new_info
 
     def rotate(self) -> UpstreamInfo:
         """Force session rotation and return new upstream info.
@@ -185,13 +194,15 @@ class UpstreamManager:
         self._session_store.rotate(self._profile_name)
         log.info("Session rotated for profile %r", self._profile_name)
 
-        self._current = None
+        with self._lock:
+            self._current = None
         return self.get_upstream()
 
     @property
     def current(self) -> UpstreamInfo | None:
         """Return the most recently resolved upstream info, or None."""
-        return self._current
+        with self._lock:
+            return self._current
 
     @property
     def profile_name(self) -> str:

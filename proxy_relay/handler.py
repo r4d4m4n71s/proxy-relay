@@ -14,6 +14,7 @@ from proxy_relay.exceptions import TunnelError
 from proxy_relay.forwarder import forward_http_request
 from proxy_relay.logger import get_logger
 from proxy_relay.monitor import ConnectionMonitor, ConnectionOutcome
+from proxy_relay.response import send_error
 from proxy_relay.tunnel import open_tunnel, relay_data
 from proxy_relay.upstream import UpstreamInfo
 
@@ -94,14 +95,14 @@ async def handle_connection(
         log.warning("Request timeout from %s", peer_str)
         if monitor is not None:
             await monitor.record_error(ConnectionOutcome.TIMEOUT, peer_str, "request timeout")
-        await _send_error(client_writer, 408, "Request Timeout")
+        await send_error(client_writer, 408, "Request Timeout")
     except TunnelError as exc:
         log.warning("Tunnel error for %s: %s", peer_str, exc)
         if monitor is not None:
             await monitor.record_error(
                 ConnectionOutcome.TUNNEL_ERROR, peer_str, str(exc),
             )
-        await _send_error(client_writer, 502, "Bad Gateway")
+        await send_error(client_writer, 502, "Bad Gateway")
     except (ConnectionResetError, BrokenPipeError, OSError) as exc:
         log.debug("Connection error from %s: %s", peer_str, exc)
         if monitor is not None:
@@ -112,7 +113,7 @@ async def handle_connection(
             await monitor.record_error(
                 ConnectionOutcome.TUNNEL_ERROR, peer_str, str(exc),
             )
-        await _send_error(client_writer, 500, "Internal Server Error")
+        await send_error(client_writer, 500, "Internal Server Error")
     finally:
         elapsed_ms = (time.monotonic() - start) * 1000
         log.debug("Connection from %s closed (%.0fms)", peer_str, elapsed_ms)
@@ -275,7 +276,7 @@ async def _handle_http(
             content_length,
             _MAX_BODY_SIZE,
         )
-        await _send_error(client_writer, 413, "Content Too Large")
+        await send_error(client_writer, 413, "Content Too Large")
         return
 
     while content_length > len(body):
@@ -374,29 +375,3 @@ async def _handle_health(
         pass
 
 
-async def _send_error(
-    writer: asyncio.StreamWriter,
-    status_code: int,
-    reason: str,
-) -> None:
-    """Send a minimal HTTP error response.
-
-    Args:
-        writer: Client stream writer.
-        status_code: HTTP status code.
-        reason: HTTP reason phrase.
-    """
-    body = f"{status_code} {reason}\r\n"
-    body_bytes = body.encode("latin-1")
-    response_head = (
-        f"HTTP/1.1 {status_code} {reason}\r\n"
-        f"Content-Type: text/plain\r\n"
-        f"Content-Length: {len(body_bytes)}\r\n"
-        f"Connection: close\r\n"
-        f"\r\n"
-    ).encode("latin-1")
-    try:
-        writer.write(response_head + body_bytes)
-        await writer.drain()
-    except OSError:
-        pass
