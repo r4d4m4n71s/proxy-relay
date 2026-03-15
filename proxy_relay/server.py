@@ -216,6 +216,7 @@ class ProxyServer:
         last_error = ""
         for attempt in range(1, _HEALTH_MAX_RETRIES + 1):
             assert self._upstream is not None
+            result = None  # reset each iteration so the except block never closes a stale writer
             try:
                 result = await asyncio.wait_for(
                     open_tunnel(
@@ -240,6 +241,7 @@ class ProxyServer:
                     timeout=_HEALTH_READ_TIMEOUT,
                 )
                 result.writer.close()
+                result = None  # writer closed; prevent double-close in except
 
                 # Parse the HTTP response body (after headers)
                 text = raw.decode("utf-8", errors="replace")
@@ -266,8 +268,8 @@ class ProxyServer:
                 return True, body
 
             except Exception as exc:
-                # Close the tunnel writer if it was opened before the error
-                if "result" in locals() and hasattr(result, "writer"):
+                # Close the tunnel writer only if it was opened in this iteration
+                if result is not None and hasattr(result, "writer"):
                     try:
                         result.writer.close()
                     except Exception:
