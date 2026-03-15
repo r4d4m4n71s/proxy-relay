@@ -120,6 +120,7 @@ def _chrome_args(
     proxy_host: str | None = None,
     proxy_port: int | None = None,
     timezone: str | None = None,
+    cdp_port: int | None = None,
 ) -> tuple[list[str], dict[str, str] | None]:
     """Build Chromium command-line and environment with anti-leak flags.
 
@@ -131,6 +132,7 @@ def _chrome_args(
     - ``--no-first-run``, ``--disable-default-apps``, ``--disable-sync``
     - ``--start-maximized``
     - ``TZ`` environment variable (when *timezone* is not ``None``)
+    - ``--remote-debugging-port`` (when *cdp_port* is not ``None``)
 
     Args:
         chromium_path: Path to the Chromium binary.
@@ -138,6 +140,8 @@ def _chrome_args(
         proxy_host: Local proxy bind address.
         proxy_port: Local proxy port. ``None`` means no proxy flags.
         timezone: IANA timezone name for ``TZ`` env override.
+        cdp_port: TCP port for ``--remote-debugging-port``. ``None`` means
+            no CDP flags.
 
     Returns:
         Tuple of (command_args, env_dict_or_None).
@@ -159,6 +163,9 @@ def _chrome_args(
         host = proxy_host or "127.0.0.1"
         cmd.append(f"--proxy-server=http://{host}:{proxy_port}")
         cmd.append('--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1')
+
+    if cdp_port is not None:
+        cmd.append(f"--remote-debugging-port={cdp_port}")
 
     env: dict[str, str] | None = None
     if timezone:
@@ -756,6 +763,10 @@ class BrowseSupervisor:
             environment variable is overridden so JavaScript reports a
             timezone consistent with the proxy exit country.  None means
             inherit the system timezone.
+        capture_session: Optional :class:`~proxy_relay.capture.CaptureSession`
+            instance.  When set, a CDP remote debugging port is allocated,
+            Chromium is launched with ``--remote-debugging-port``, and the
+            capture session is run in a daemon thread alongside the browser.
     """
 
     def __init__(
@@ -768,6 +779,7 @@ class BrowseSupervisor:
         relay_pid: int,
         rotate_interval_min: int = 30,
         timezone: str | None = None,
+        capture_session: object | None = None,
     ) -> None:
         self._chromium_path = chromium_path
         self._proxy_host = proxy_host
@@ -776,10 +788,15 @@ class BrowseSupervisor:
         self._relay_pid = relay_pid
         self._rotate_interval_min = rotate_interval_min
         self._timezone = timezone
+        self._capture = capture_session
+        self._cdp_port: int | None = (
+            capture_session.cdp_port if capture_session is not None else None  # type: ignore[union-attr]
+        )
 
         self._stop_event = threading.Event()
         self._chromium_proc: subprocess.Popen[bytes] | None = None
         self._relay_died: bool = False
+        self._capture_thread: threading.Thread | None = None
 
     def run(self) -> int:
         """Launch Chromium and supervise until exit.
@@ -788,6 +805,7 @@ class BrowseSupervisor:
             Exit code: 0 if browser closed normally, 1 if relay died,
             130 if interrupted by Ctrl-C.
         """
+        exit_code: int = 0
         try:
             self._chromium_proc = self._start_chromium()
 
@@ -802,24 +820,51 @@ class BrowseSupervisor:
                 )
                 rotate_thread.start()
 
+            # Start capture thread if a capture session is configured
+            if self._capture is not None and self._cdp_port is not None:
+                self._capture_thread = threading.Thread(
+                    target=self._capture.run_in_thread,  # type: ignore[union-attr]
+                    args=(self._cdp_port,),
+                    name="cdp-capture",
+                    daemon=True,
+                )
+                self._capture_thread.start()
+                log.info("Capture thread started (CDP port %d)", self._cdp_port)
+
             # Main loop: wait for browser exit or stop event
             while True:
                 if self._stop_event.wait(timeout=1.0):
                     # Relay died — kill the browser
                     log.warning("Stopping browser because relay is gone")
                     self._cleanup_chromium()
-                    return 1
+                    exit_code = 1
+                    break
 
                 if self._chromium_proc.poll() is not None:
                     rc = self._chromium_proc.returncode
                     log.info("Chromium exited with code %d", rc)
                     self._stop_event.set()
-                    return 0
+                    exit_code = 0
+                    break
 
         except KeyboardInterrupt:
             log.info("Interrupted by user — shutting down browser")
             self._cleanup_chromium()
-            return 130
+            exit_code = 130
+
+        finally:
+            # Stop capture session if running
+            if self._capture is not None:
+                try:
+                    self._capture.request_stop()  # type: ignore[union-attr]
+                except Exception:
+                    log.debug("Error requesting capture stop", exc_info=True)
+            if self._capture_thread is not None:
+                self._capture_thread.join(timeout=10)
+                if self._capture_thread.is_alive():
+                    log.warning("Capture thread did not exit within 10s")
+
+        return exit_code
 
     def _start_chromium(self) -> subprocess.Popen[bytes]:
         """Launch the Chromium process.
@@ -836,6 +881,7 @@ class BrowseSupervisor:
             proxy_host=self._proxy_host,
             proxy_port=self._proxy_port,
             timezone=self._timezone,
+            cdp_port=self._cdp_port,
         )
 
         if self._timezone:

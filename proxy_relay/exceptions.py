@@ -37,3 +37,7 @@ class BrowseError(ProxyRelayError):
     Raised when Chromium cannot be found, the health check fails,
     or the proxy dies while the browser is running.
     """
+
+
+class CaptureError(ProxyRelayError):
+    """CDP capture connection or observation error."""

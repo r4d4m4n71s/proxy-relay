@@ -7,7 +7,7 @@ Repo: https://github.com/r4d4m4n71s/proxy-relay (private)
 All persistent state: `~/.config/proxy-relay/` (config.toml, PID files, status files, browser profiles)
 
 ## Project status
-**300 tests on `main`** | 16 production modules, 15 test files. S63 complete: async I/O refactor in `server.py` (C4-17).
+**420 tests on `main`** | 21 production modules, 23 test files. S63 complete: async I/O refactor in `server.py` (C4-17). CDP capture subpackage added (5 modules, 120 new tests).
 
 ### Async I/O refactor (S63 — C4-17)
 4 blocking I/O paths in `server.py` are now wrapped with `asyncio.to_thread()`:
@@ -41,6 +41,7 @@ All persistent state: `~/.config/proxy-relay/` (config.toml, PID files, status f
 
 ### Architecture
 - Dependency direction: cli -> server/browse -> handler/tunnel/forwarder/monitor -> upstream/sanitizer/tz -> config/logger/exceptions
+- capture/ is a self-contained subpackage: cli -> browse -> capture -> (websockets, telemetry_monitor) [optional deps]
 - Server is async (`asyncio.start_server`); browse supervisor is threaded (subprocess + threading)
 - Signal-based IPC: SIGTERM (stop), SIGUSR1 (rotate)
 
@@ -55,7 +56,7 @@ proxy_relay/
     __main__.py         python -m proxy_relay entry point
     cli.py              CLI: start, stop, status, rotate, browse subcommands (argparse)
     config.py           TOML config loader, RelayConfig + section dataclasses
-    exceptions.py       Exception hierarchy: ProxyRelayError -> ConfigError, UpstreamError, TunnelError, BrowseError
+    exceptions.py       Exception hierarchy: ProxyRelayError -> ConfigError, UpstreamError, TunnelError, BrowseError, CaptureError
     logger.py           get_logger() + configure_logging()
     server.py           ProxyServer: async TCP accept loop, health check, signal handlers, PID/status files
     handler.py          Connection dispatcher: CONNECT tunnel, plain HTTP forward, health endpoint
@@ -67,6 +68,12 @@ proxy_relay/
     pidfile.py          PID/status file ops: profile-scoped .pid and .status.json
     tz.py               Timezone mismatch detection + country-to-IANA mapping (40+ countries)
     browse.py           Chromium discovery, health check client, BrowseSupervisor, auto-start/stop server
+    capture/
+        __init__.py     CaptureSession orchestrator, is_capture_available, _find_free_port
+        models.py       CaptureConfig dataclass + module-level constants (defaults, redact list)
+        cdp_client.py   Async WebSocket CDP client (lazy-imports websockets)
+        collector.py    CaptureCollector: domain filter, header redaction, body truncation, cookie/storage diff
+        schema.py       PROXY_RELAY_SCHEMA — 5 tables, 5 routes, 16 dashboards for telemetry-monitor
 ```
 
 ## Tests
