@@ -153,3 +153,57 @@ class TestCaptureConfigCustomValues:
 
         cfg = CaptureConfig(redact_headers=frozenset({"x-token"}))
         assert isinstance(cfg.redact_headers, frozenset)
+
+
+# ---------------------------------------------------------------------------
+# is_json_mime
+# ---------------------------------------------------------------------------
+
+
+class TestIsJsonMime:
+    """Verify JSON MIME type detection."""
+
+    def test_application_json(self):
+        from proxy_relay.capture.models import is_json_mime
+
+        assert is_json_mime("application/json") is True
+
+    def test_application_json_with_charset(self):
+        from proxy_relay.capture.models import is_json_mime
+
+        assert is_json_mime("application/json; charset=utf-8") is True
+
+    def test_vendor_json(self):
+        from proxy_relay.capture.models import is_json_mime
+
+        assert is_json_mime("application/vnd.api+json") is True
+
+    def test_hal_json(self):
+        from proxy_relay.capture.models import is_json_mime
+
+        assert is_json_mime("application/hal+json") is True
+
+    def test_custom_vendor_plus_json(self):
+        from proxy_relay.capture.models import is_json_mime
+
+        assert is_json_mime("application/vnd.tidal.v1+json") is True
+
+    def test_text_html_rejected(self):
+        from proxy_relay.capture.models import is_json_mime
+
+        assert is_json_mime("text/html") is False
+
+    def test_image_png_rejected(self):
+        from proxy_relay.capture.models import is_json_mime
+
+        assert is_json_mime("image/png") is False
+
+    def test_empty_string(self):
+        from proxy_relay.capture.models import is_json_mime
+
+        assert is_json_mime("") is False
+
+    def test_case_insensitive(self):
+        from proxy_relay.capture.models import is_json_mime
+
+        assert is_json_mime("Application/JSON") is True

@@ -207,9 +207,10 @@ class CaptureSession:
         self._cdp = _CdpClient()
         await self._cdp.connect(cdp_port)
 
-        # Enable Network domain
+        # Enable CDP domains
         await self._cdp.send("Network.enable", {"maxPostDataSize": self._config.max_body_bytes})
-        log.debug("CDP Network domain enabled")
+        await self._cdp.send("Page.enable")
+        log.debug("CDP Network + Page domains enabled")
 
         # Set up collector
         collector = CaptureCollector(
@@ -222,7 +223,7 @@ class CaptureSession:
         await self._cdp.subscribe("Network.requestWillBeSent", collector.on_request)
         await self._cdp.subscribe(
             "Network.responseReceived",
-            lambda params: collector.on_response(params, body=None),
+            self._make_response_handler(collector),
         )
         await self._cdp.subscribe(
             "Network.webSocketFrameSent",
@@ -232,6 +233,9 @@ class CaptureSession:
             "Network.webSocketFrameReceived",
             lambda params: collector.on_websocket_frame("received", params),
         )
+
+        # Subscribe to Page navigation events
+        await self._cdp.subscribe("Page.frameNavigated", collector.on_navigation)
 
         # Store stop event for run_until_stopped
         self._stop_event = asyncio.Event()
@@ -246,6 +250,43 @@ class CaptureSession:
         self._poll_tasks = [cookie_task, storage_task]
 
         log.info("Capture session started")
+
+    def _make_response_handler(self, collector: Any) -> Any:
+        """Build an async callback that fetches JSON response bodies via CDP.
+
+        The returned coroutine function is registered as the
+        ``Network.responseReceived`` subscriber.  For JSON MIME types on
+        matching domains it calls ``Network.getResponseBody`` to retrieve the
+        actual body before forwarding to the collector.  Non-JSON or
+        non-matching responses are forwarded with ``body=None``.
+        """
+        from proxy_relay.capture.models import is_json_mime
+
+        cdp = self._cdp
+
+        async def _on_response(params: dict[str, Any]) -> None:
+            response = params.get("response", {})
+            mime_type: str = response.get("mimeType", "")
+            request_id: str = params.get("requestId", "")
+            url: str = response.get("url", "")
+
+            body: str | None = None
+
+            if request_id and is_json_mime(mime_type) and collector.matches_domain(url):
+                try:
+                    result = await cdp.send(
+                        "Network.getResponseBody", {"requestId": request_id},
+                    )
+                    body = result.get("body", "")
+                    if result.get("base64Encoded", False):
+                        import base64
+                        body = base64.b64decode(body).decode("utf-8", errors="replace")
+                except Exception:
+                    log.debug("Could not fetch body for %s (request %s)", url, request_id)
+
+            collector.on_response(params, body=body)
+
+        return _on_response
 
     async def _poll_cookies(self, collector: Any) -> None:
         """Periodically fetch all cookies from CDP and pass to collector."""
@@ -266,23 +307,28 @@ class CaptureSession:
                 pass
 
     async def _poll_storage(self, collector: Any) -> None:
-        """Periodically fetch localStorage/sessionStorage via CDP Runtime."""
+        """Periodically fetch localStorage/sessionStorage/IndexedDB via CDP."""
         interval = self._config.storage_poll_interval_s
-        storage_origins: list[dict[str, Any]] = []
 
-        # Discover storage origins once
+        # Enable storage-related domains (Page.enable already called in start())
         try:
             await self._cdp.send("Storage.enable")
-            frame_result = await self._cdp.send("Page.enable")
-            _ = frame_result  # Page.enable returns empty result
         except Exception:
-            log.debug("Could not enable Page/Storage domains for storage poll", exc_info=True)
+            log.debug("Could not enable Storage domain", exc_info=True)
+        try:
+            await self._cdp.send("IndexedDB.enable")
+        except Exception:
+            log.debug("Could not enable IndexedDB domain", exc_info=True)
 
         while self._stop_event is not None and not self._stop_event.is_set():
             try:
-                await self._fetch_storage_for_origins(collector, storage_origins)
+                await self._fetch_storage_for_origins(collector)
             except Exception:
                 log.debug("Storage poll error", exc_info=True)
+            try:
+                await self._fetch_indexed_db_for_origins(collector)
+            except Exception:
+                log.debug("IndexedDB poll error", exc_info=True)
             try:
                 await asyncio.wait_for(
                     self._stop_event.wait(), timeout=interval
@@ -290,9 +336,7 @@ class CaptureSession:
             except TimeoutError:
                 pass
 
-    async def _fetch_storage_for_origins(
-        self, collector: Any, origins: list[dict[str, Any]]
-    ) -> None:
+    async def _fetch_storage_for_origins(self, collector: Any) -> None:
         """Fetch localStorage and sessionStorage for configured domains."""
         for domain in self._config.domains:
             for scheme in ("https", "http"):
@@ -315,6 +359,62 @@ class CaptureSession:
                     except Exception:
                         # Origin may not exist in the current page — silently skip
                         pass
+
+    async def _fetch_indexed_db_for_origins(self, collector: Any) -> None:
+        """Fetch IndexedDB contents for configured domains and pass to collector."""
+        from proxy_relay.capture.models import INDEXEDDB_PAGE_SIZE
+
+        for domain in self._config.domains:
+            for scheme in ("https", "http"):
+                origin = f"{scheme}://{domain}"
+                try:
+                    db_result = await self._cdp.send(
+                        "IndexedDB.requestDatabaseNames",
+                        {"securityOrigin": origin},
+                    )
+                    db_names: list[str] = db_result.get("databaseNames", [])
+                except Exception:
+                    continue  # Origin may not have IndexedDB
+
+                for db_name in db_names:
+                    try:
+                        db_info = await self._cdp.send(
+                            "IndexedDB.requestDatabase",
+                            {"securityOrigin": origin, "databaseName": db_name},
+                        )
+                        object_stores = (
+                            db_info.get("databaseWithObjectStores", {})
+                            .get("objectStores", [])
+                        )
+                    except Exception:
+                        continue
+
+                    for store in object_stores:
+                        store_name: str = store.get("name", "")
+                        storage_type = f"indexedDB:{db_name}/{store_name}"
+                        try:
+                            data_result = await self._cdp.send(
+                                "IndexedDB.requestData",
+                                {
+                                    "securityOrigin": origin,
+                                    "databaseName": db_name,
+                                    "objectStoreName": store_name,
+                                    "indexName": "",
+                                    "skipCount": 0,
+                                    "pageSize": INDEXEDDB_PAGE_SIZE,
+                                },
+                            )
+                            entries = data_result.get("objectStoreDataEntries", [])
+                            data: dict[str, str] = {}
+                            for entry in entries:
+                                key = str(entry.get("key", {}).get("value", ""))
+                                value = str(entry.get("value", {}).get("value", ""))
+                                if key:
+                                    data[key] = value
+                            if data:
+                                collector.on_storage(origin, storage_type, data)
+                        except Exception:
+                            pass  # Object store may be empty or inaccessible
 
     async def run_until_stopped(self) -> None:
         """Gather CDP recv_loop and poll tasks, waiting for the stop event.
@@ -382,12 +482,13 @@ class CaptureSession:
             await asyncio.gather(*self._poll_tasks, return_exceptions=True)
         self._poll_tasks = []
 
-        # Disable Network domain and close CDP
+        # Disable all enabled CDP domains and close connection
         if self._cdp is not None:
-            try:
-                await self._cdp.send("Network.disable")
-            except Exception:
-                log.debug("Error disabling Network domain", exc_info=True)
+            for domain_cmd in ("Network.disable", "Page.disable", "IndexedDB.disable"):
+                try:
+                    await self._cdp.send(domain_cmd)
+                except Exception:
+                    log.debug("Error sending %s", domain_cmd, exc_info=True)
             await self._cdp.close()
             self._cdp = None
 

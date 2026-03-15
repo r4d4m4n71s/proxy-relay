@@ -580,3 +580,52 @@ class TestOnWebSocketFrame:
         default_collector.on_websocket_frame("received", params)
         _, payload = enqueue_fn.calls[0]
         assert payload.get("direction") == "received"
+
+
+# ---------------------------------------------------------------------------
+# 9. on_navigation
+# ---------------------------------------------------------------------------
+
+
+class TestOnNavigation:
+    """Verify on_navigation filters and enqueues page navigation events."""
+
+    def _make_nav_params(self, url, frame_id="frame-1", transition_type="Navigation"):
+        return {
+            "frame": {
+                "id": frame_id,
+                "url": url,
+                "mimeType": "text/html",
+            },
+            "type": transition_type,
+        }
+
+    def test_navigation_enqueued_for_matching_domain(self, default_collector, enqueue_fn):
+        params = self._make_nav_params("https://listen.tidal.com/album/123")
+        default_collector.on_navigation(params)
+        assert len(enqueue_fn.calls) == 1
+        event_type, _ = enqueue_fn.calls[0]
+        assert event_type == "page.navigated"
+
+    def test_navigation_skips_non_matching_domain(self, default_collector, enqueue_fn):
+        params = self._make_nav_params("https://google.com/search")
+        default_collector.on_navigation(params)
+        assert len(enqueue_fn.calls) == 0
+
+    def test_navigation_extracts_frame_id(self, default_collector, enqueue_fn):
+        params = self._make_nav_params("https://tidal.com/", frame_id="main-frame")
+        default_collector.on_navigation(params)
+        _, payload = enqueue_fn.calls[0]
+        assert payload["frame_id"] == "main-frame"
+
+    def test_navigation_extracts_transition_type(self, default_collector, enqueue_fn):
+        params = self._make_nav_params("https://tidal.com/", transition_type="link")
+        default_collector.on_navigation(params)
+        _, payload = enqueue_fn.calls[0]
+        assert payload["transition_type"] == "link"
+
+    def test_navigation_includes_profile(self, default_collector, enqueue_fn):
+        params = self._make_nav_params("https://tidal.com/")
+        default_collector.on_navigation(params)
+        _, payload = enqueue_fn.calls[0]
+        assert "profile" in payload

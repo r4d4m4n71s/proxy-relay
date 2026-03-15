@@ -19,9 +19,9 @@ class TestSchemaStructure:
         self._schema = PROXY_RELAY_SCHEMA
         return PROXY_RELAY_SCHEMA
 
-    def test_schema_has_five_tables(self):
-        assert len(self._schema.tables) == 5, (
-            f"Expected 5 tables, got {len(self._schema.tables)}: "
+    def test_schema_has_six_tables(self):
+        assert len(self._schema.tables) == 6, (
+            f"Expected 6 tables, got {len(self._schema.tables)}: "
             f"{[t.name for t in self._schema.tables]}"
         )
 
@@ -33,12 +33,13 @@ class TestSchemaStructure:
             "cookies",
             "storage_snapshots",
             "websocket_frames",
+            "page_navigations",
         }
         assert names == expected, f"Table names mismatch. Got: {names}"
 
-    def test_schema_has_five_routes(self):
-        assert len(self._schema.routes) == 5, (
-            f"Expected 5 routes, got {len(self._schema.routes)}"
+    def test_schema_has_six_routes(self):
+        assert len(self._schema.routes) == 6, (
+            f"Expected 6 routes, got {len(self._schema.routes)}"
         )
 
     def test_schema_route_prefixes(self):
@@ -48,6 +49,7 @@ class TestSchemaStructure:
         assert "cookie." in prefixes
         assert "storage." in prefixes
         assert "ws." in prefixes
+        assert "page." in prefixes
 
     def test_schema_validates(self):
         """PROXY_RELAY_SCHEMA.validate() must succeed without raising SchemaError."""
@@ -116,3 +118,9 @@ class TestSchemaColumns:
         required = {"request_id", "url", "direction", "payload", "opcode", "profile"}
         missing = required - cols
         assert not missing, f"websocket_frames missing columns: {missing}"
+
+    def test_page_navigations_columns(self):
+        cols = self._column_names("page_navigations")
+        required = {"url", "frame_id", "transition_type", "mime_type", "profile"}
+        missing = required - cols
+        assert not missing, f"page_navigations missing columns: {missing}"

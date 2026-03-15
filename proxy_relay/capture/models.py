@@ -22,6 +22,20 @@ DEFAULT_REDACT_HEADERS: frozenset[str] = frozenset(
 )
 
 MAX_BODY_BYTES: int = 65_536
+INDEXEDDB_PAGE_SIZE: int = 100
+
+JSON_MIME_TYPES: frozenset[str] = frozenset({
+    "application/json",
+    "text/json",
+    "application/vnd.api+json",
+    "application/hal+json",
+})
+
+
+def is_json_mime(mime_type: str) -> bool:
+    """Return True if *mime_type* indicates a JSON response body."""
+    mt = mime_type.lower().split(";")[0].strip()
+    return mt in JSON_MIME_TYPES or mt.endswith("+json")
 COOKIE_POLL_INTERVAL_S: float = 30.0
 STORAGE_POLL_INTERVAL_S: float = 60.0
 

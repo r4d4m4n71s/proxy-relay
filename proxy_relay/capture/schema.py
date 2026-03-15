@@ -86,6 +86,17 @@ def _build_schema() -> SchemaDefinition:
                 ],
                 indexes=["timestamp", "url", "direction"],
             ),
+            TableSchema(
+                name="page_navigations",
+                columns=[
+                    ColumnDef("url"),
+                    ColumnDef("frame_id"),
+                    ColumnDef("transition_type"),
+                    ColumnDef("mime_type"),
+                    ColumnDef("profile"),
+                ],
+                indexes=["timestamp", "url"],
+            ),
         ],
         routes=[
             EventRoute(prefix="http.request.", table="http_requests", batch=True),
@@ -93,6 +104,7 @@ def _build_schema() -> SchemaDefinition:
             EventRoute(prefix="cookie.", table="cookies", batch=True),
             EventRoute(prefix="storage.", table="storage_snapshots", batch=True),
             EventRoute(prefix="ws.", table="websocket_frames", batch=True),
+            EventRoute(prefix="page.", table="page_navigations", batch=True),
         ],
         dashboards={
             "requests_by_domain": (
@@ -187,6 +199,10 @@ def _build_schema() -> SchemaDefinition:
                 " WHERE lower(headers) LIKE '%user-agent%'"
                 " OR lower(headers) LIKE '%x-tidal%'"
                 " ORDER BY timestamp DESC LIMIT 50"
+            ),
+            "page_navigation_history": (
+                "SELECT timestamp, url, transition_type, frame_id"
+                " FROM page_navigations ORDER BY timestamp DESC LIMIT 100"
             ),
             "playback_events": (
                 "SELECT timestamp, url, method"

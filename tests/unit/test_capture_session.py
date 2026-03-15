@@ -4,6 +4,8 @@ from __future__ import annotations
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # 1. _find_free_port
 # ---------------------------------------------------------------------------
@@ -220,3 +222,110 @@ class TestCaptureSession:
 
         mock_cdp.connect.assert_called_once_with(9222)
         mock_cdp.close.assert_called_once()
+
+    async def test_start_enables_page_domain(self):
+        """start() must call Page.enable for navigation events."""
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        session = CaptureSession(config=CaptureConfig())
+        mock_cdp = AsyncMock()
+        mock_cdp.connect = AsyncMock()
+        mock_cdp.send = AsyncMock(return_value={})
+        mock_cdp.subscribe = AsyncMock()
+        mock_cdp.close = AsyncMock()
+        mock_writer = MagicMock()
+
+        with patch("proxy_relay.capture.CdpClient", return_value=mock_cdp), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer):
+            await session.start(9222)
+
+        # Verify Page.enable was called
+        send_calls = [call.args[0] for call in mock_cdp.send.call_args_list]
+        assert "Page.enable" in send_calls, f"Page.enable not found in: {send_calls}"
+
+        await session.stop()
+
+    async def test_start_subscribes_to_page_frame_navigated(self):
+        """start() must subscribe to Page.frameNavigated."""
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        session = CaptureSession(config=CaptureConfig())
+        mock_cdp = AsyncMock()
+        mock_cdp.connect = AsyncMock()
+        mock_cdp.send = AsyncMock(return_value={})
+        mock_cdp.subscribe = AsyncMock()
+        mock_cdp.close = AsyncMock()
+        mock_writer = MagicMock()
+
+        with patch("proxy_relay.capture.CdpClient", return_value=mock_cdp), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer):
+            await session.start(9222)
+
+        subscribe_events = [call.args[0] for call in mock_cdp.subscribe.call_args_list]
+        assert "Page.frameNavigated" in subscribe_events, (
+            f"Page.frameNavigated not in subscriptions: {subscribe_events}"
+        )
+
+        await session.stop()
+
+    async def test_start_registers_async_response_handler(self):
+        """start() must register an async handler for Network.responseReceived."""
+        import asyncio
+
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        session = CaptureSession(config=CaptureConfig())
+        mock_cdp = AsyncMock()
+        mock_cdp.connect = AsyncMock()
+        mock_cdp.send = AsyncMock(return_value={})
+        mock_cdp.subscribe = AsyncMock()
+        mock_cdp.close = AsyncMock()
+        mock_writer = MagicMock()
+
+        with patch("proxy_relay.capture.CdpClient", return_value=mock_cdp), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer):
+            await session.start(9222)
+
+        # Find the Network.responseReceived subscription
+        for call in mock_cdp.subscribe.call_args_list:
+            if call.args[0] == "Network.responseReceived":
+                handler = call.args[1]
+                # The handler should be an async function (coroutine function)
+                assert asyncio.iscoroutinefunction(handler), (
+                    "Network.responseReceived handler must be async for body fetching"
+                )
+                break
+        else:
+            pytest.fail("Network.responseReceived subscription not found")
+
+        await session.stop()
+
+    async def test_stop_disables_all_domains(self):
+        """stop() must disable Network, Page, and IndexedDB domains."""
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        session = CaptureSession(config=CaptureConfig())
+        mock_cdp = AsyncMock()
+        mock_cdp.connect = AsyncMock()
+        mock_cdp.send = AsyncMock(return_value={})
+        mock_cdp.subscribe = AsyncMock()
+        mock_cdp.close = AsyncMock()
+        mock_writer = MagicMock()
+
+        with patch("proxy_relay.capture.CdpClient", return_value=mock_cdp), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer):
+            await session.start(9222)
+            mock_cdp.send.reset_mock()
+            await session.stop()
+
+        disable_calls = [
+            call.args[0] for call in mock_cdp.send.call_args_list
+            if call.args[0].endswith(".disable")
+        ]
+        assert "Network.disable" in disable_calls
+        assert "Page.disable" in disable_calls
+        assert "IndexedDB.disable" in disable_calls

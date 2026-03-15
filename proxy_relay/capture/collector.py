@@ -266,6 +266,30 @@ class CaptureCollector:
         }
         self._enqueue("ws.frame", payload)
 
+    def on_navigation(self, params: dict[str, Any]) -> None:
+        """Handle ``Page.frameNavigated`` events.
+
+        Enqueues a ``page.navigated`` event for timeline correlation with
+        HTTP requests.
+
+        Args:
+            params: Raw CDP event params dict containing ``frame`` info.
+        """
+        frame: dict[str, Any] = params.get("frame", {})
+        url: str = frame.get("url", "")
+
+        if not self.matches_domain(url):
+            return
+
+        payload: dict[str, Any] = {
+            "url": url,
+            "frame_id": frame.get("id", ""),
+            "transition_type": params.get("type", frame.get("transitionType", "")),
+            "mime_type": frame.get("mimeType", ""),
+            "profile": self._profile,
+        }
+        self._enqueue("page.navigated", payload)
+
     # ── Instance helpers ──────────────────────────────────────────────────
 
     def _redact_headers(self, headers: dict[str, str]) -> dict[str, str]:
