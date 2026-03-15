@@ -7,7 +7,14 @@ Repo: https://github.com/r4d4m4n71s/proxy-relay (private)
 All persistent state: `~/.config/proxy-relay/` (config.toml, PID files, status files, browser profiles)
 
 ## Project status
-**245 tests on `main`** | 16 production modules, 15 test files.
+**300 tests on `main`** | 16 production modules, 15 test files. S63 complete: async I/O refactor in `server.py` (C4-17).
+
+### Async I/O refactor (S63 — C4-17)
+4 blocking I/O paths in `server.py` are now wrapped with `asyncio.to_thread()`:
+- `_update_status_file_async()` — async wrapper around sync status file write
+- `_on_connection` finally block — uses async status write
+- `_do_rotate()` — wraps `upstream_manager.rotate()`
+- `start()` — wraps `get_upstream()` and `write_pid()`
 
 ## Global rule overrides
 

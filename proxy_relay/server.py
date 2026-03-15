@@ -78,7 +78,7 @@ class ProxyServer:
             return
 
         # Resolve upstream before accepting connections
-        self._upstream = self._upstream_manager.get_upstream()
+        self._upstream = await asyncio.to_thread(self._upstream_manager.get_upstream)
         log.info(
             "Upstream resolved: %s (country=%s)",
             self._upstream.url,
@@ -112,10 +112,10 @@ class ProxyServer:
             self._port = self._server.sockets[0].getsockname()[1]
 
         # Write PID file (profile-scoped)
-        write_pid(self._pid_path)
+        await asyncio.to_thread(write_pid, self._pid_path)
 
         # Write initial status so browse can discover host:port
-        self._update_status_file()
+        await self._update_status_file_async()
 
         # Install signal handlers for graceful shutdown
         loop = asyncio.get_running_loop()
@@ -185,14 +185,14 @@ class ProxyServer:
             return
 
         try:
-            new_upstream = self._upstream_manager.rotate()
+            new_upstream = await asyncio.to_thread(self._upstream_manager.rotate)
             self._upstream = new_upstream
             log.info(
                 "Upstream rotated: %s (country=%s)",
                 self._upstream.url,
                 self._upstream.country or "any",
             )
-            self._update_status_file()
+            await self._update_status_file_async()
         except Exception as exc:
             log.error(
                 "Upstream rotation failed — keeping current upstream: %s", exc
@@ -341,6 +341,10 @@ class ProxyServer:
             path=self._status_path,
         )
 
+    async def _update_status_file_async(self) -> None:
+        """Write status file without blocking the event loop."""
+        await asyncio.to_thread(self._update_status_file)
+
     @property
     def monitor_stats(self) -> MonitorStats | None:
         """Return current monitor stats, or None if monitoring is disabled."""
@@ -389,7 +393,7 @@ class ProxyServer:
                 conn_id,
                 self._active_connections,
             )
-            self._update_status_file()
+            await self._update_status_file_async()
 
     @property
     def host(self) -> str:
