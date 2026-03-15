@@ -16,6 +16,7 @@ import atexit
 import json
 import os
 import signal
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,10 @@ STATUS_PATH: Path = CONFIG_DIR / "status.json"
 
 # Default profile name when none is specified.
 _DEFAULT_PROFILE: str = "browse"
+
+# Track paths already registered with atexit to avoid duplicate registrations
+# when write_pid() is called multiple times for the same path.
+_atexit_registered: set[Path] = set()
 
 
 def _validate_profile_name(profile: str) -> None:
@@ -93,7 +98,9 @@ def write_pid(path: Path = PID_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(str(os.getpid()), encoding="utf-8")
     os.chmod(path, 0o600)
-    atexit.register(remove_pid, path)
+    if path not in _atexit_registered:
+        atexit.register(remove_pid, path)
+        _atexit_registered.add(path)
     log.debug("PID %d written to %s", os.getpid(), path)
 
 
@@ -226,8 +233,26 @@ def write_status(
         data["monitor"] = stats
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    os.chmod(path, 0o600)
+
+    # Write to a temporary file in the same directory, then atomically replace
+    # the destination so readers never observe a partially-written file.
+    try:
+        fd, tmp_path_str = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".tmp")
+        tmp_path = Path(tmp_path_str)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(data, indent=2))
+            os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+    except OSError as exc:
+        log.warning("Could not write status file %s: %s", path, exc)
+        return
     log.debug("Status written to %s", path)
 
 

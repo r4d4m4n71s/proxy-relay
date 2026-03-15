@@ -104,6 +104,7 @@ class ConnectionMonitor:
         self._total_errors: int = 0
         self._total_rotations: int = 0
         self._last_rotation_time: float = 0.0
+        self._shutdown: bool = False
 
     # ------------------------------------------------------------------
     # Public recording API
@@ -255,6 +256,16 @@ class ConnectionMonitor:
         self._last_rotation_time = 0.0
         log.debug("ConnectionMonitor reset")
 
+    def shutdown(self) -> None:
+        """Signal that the server is shutting down.
+
+        Once called, rotation callbacks will no longer be invoked even if
+        the error threshold is reached.  This prevents spurious rotation
+        attempts during graceful shutdown when connection errors are expected.
+        """
+        self._shutdown = True
+        log.debug("ConnectionMonitor shutdown signalled")
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
@@ -263,8 +274,15 @@ class ConnectionMonitor:
         """Invoke the rotation callback and clear the window.
 
         Clears the rolling window after rotation to prevent immediate
-        re-triggering on stale error records.
+        re-triggering on stale error records.  Does nothing if
+        ``shutdown()`` has been called — connection errors during graceful
+        shutdown are expected and should not trigger a rotation.
         """
+        if self._shutdown:
+            log.debug("Skipping rotation — monitor is in shutdown state")
+            self._window.clear()
+            return
+
         self._total_rotations += 1
         self._last_rotation_time = time.monotonic()
 

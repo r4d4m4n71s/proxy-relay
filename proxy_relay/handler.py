@@ -146,14 +146,15 @@ async def _read_request(
     # Read until we find the empty line marking end of headers
     header_data = b""
     while b"\r\n\r\n" not in header_data:
-        chunk = await reader.read(4096)
-        if not chunk:
-            raise TunnelError("Client disconnected before sending complete headers")
-        header_data += chunk
-        if len(header_data) > _MAX_HEADER_SIZE:
+        if len(header_data) >= _MAX_HEADER_SIZE:
             raise TunnelError(
                 f"Request headers exceed maximum size ({_MAX_HEADER_SIZE} bytes)"
             )
+        remaining = _MAX_HEADER_SIZE - len(header_data)
+        chunk = await reader.read(min(4096, remaining))
+        if not chunk:
+            raise TunnelError("Client disconnected before sending complete headers")
+        header_data += chunk
 
     # Split headers from any body data that was read
     header_end = header_data.index(b"\r\n\r\n")
@@ -286,6 +287,7 @@ async def _handle_http(
             break  # EOF — client disconnected before sending full body
         body += extra
 
+    forward_start = time.monotonic()
     success = await forward_http_request(
         method=method,
         url=url,
@@ -295,10 +297,11 @@ async def _handle_http(
         upstream=upstream,
         client_writer=client_writer,
     )
+    forward_latency_ms = (time.monotonic() - forward_start) * 1000
 
     if monitor is not None:
         if success:
-            await monitor.record_success(0.0, url)
+            await monitor.record_success(forward_latency_ms, url)
         else:
             await monitor.record_error(ConnectionOutcome.TUNNEL_ERROR, url, "HTTP forward failed")
 

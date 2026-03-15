@@ -204,17 +204,17 @@ def _cmd_start(args: argparse.Namespace) -> int:
     log_level = args.log_level or config.log_level
     configure_logging(log_level)
 
-    host = config.server.host if args.host is None else args.host
-    port = config.server.port if args.port is None else args.port
-    profile_name = args.profile or config.proxy_st_profile
-
-    # Validate CLI-supplied port range
+    # Validate CLI-supplied port range before using the value
     if args.port is not None and not (1 <= args.port <= 65535):
         print(
             f"Invalid --port {args.port!r}: must be an integer in 1-65535",
             file=sys.stderr,
         )
         return 1
+
+    host = config.server.host if args.host is None else args.host
+    port = config.server.port if args.port is None else args.port
+    profile_name = args.profile or config.proxy_st_profile
 
     # Check for existing instance of this profile
     pid = read_pid(pid_path_for(profile_name))

@@ -247,11 +247,14 @@ def open_browser_tab(handle: BrowserHandle, url: str) -> None:
         url,
     ]
     log.debug("Opening tab in existing session: %s", " ".join(cmd))
-    subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )  # noqa: S603
+    except OSError as exc:
+        log.warning("Failed to open browser tab for %s: %s", url, exc)
 
 
 def close_browser(handle: BrowserHandle) -> None:

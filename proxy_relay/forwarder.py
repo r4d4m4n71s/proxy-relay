@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import urllib.parse
 
 from proxy_relay.exceptions import TunnelError
 from proxy_relay.logger import get_logger
@@ -137,6 +138,10 @@ async def forward_http_request(
 def _parse_absolute_url(url: str) -> tuple[str, int, str]:
     """Parse an absolute HTTP URL into (host, port, path).
 
+    Uses ``urllib.parse.urlparse`` to correctly handle URLs that contain
+    userinfo (``user:pass@host``), IPv6 addresses (``[::1]:8080``), and
+    other edge cases that confuse manual ``":"`` splitting.
+
     Args:
         url: Absolute URL (e.g., "http://example.com:8080/path?query").
 
@@ -144,40 +149,30 @@ def _parse_absolute_url(url: str) -> tuple[str, int, str]:
         Tuple of (hostname, port, path_with_query).
 
     Raises:
-        TunnelError: If the URL cannot be parsed.
+        TunnelError: If the URL cannot be parsed or has an unsupported scheme.
     """
-    # Strip the scheme
-    if url.startswith("http://"):
-        rest = url[7:]
+    parsed = urllib.parse.urlparse(url)
+
+    scheme = parsed.scheme.lower()
+    if scheme == "http":
         default_port = 80
-    elif url.startswith("https://"):
-        rest = url[8:]
+    elif scheme == "https":
         default_port = 443
     else:
         raise TunnelError(f"Unsupported URL scheme in: {url!r}")
 
-    # Split host from path
-    slash_idx = rest.find("/")
-    if slash_idx == -1:
-        host_part = rest
-        path = "/"
-    else:
-        host_part = rest[:slash_idx]
-        path = rest[slash_idx:]
-
-    # Extract port from host
-    if ":" in host_part:
-        host, port_str = host_part.rsplit(":", 1)
-        try:
-            port = int(port_str)
-        except ValueError as exc:
-            raise TunnelError(f"Invalid port in URL: {url!r}") from exc
-    else:
-        host = host_part
-        port = default_port
-
+    host = parsed.hostname
     if not host:
         raise TunnelError(f"Empty host in URL: {url!r}")
+
+    port = parsed.port if parsed.port is not None else default_port
+
+    # Reconstruct the path+query+fragment as the relative path to forward
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    if parsed.fragment:
+        path = f"{path}#{parsed.fragment}"
 
     return host, port, path
 
