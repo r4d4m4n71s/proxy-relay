@@ -257,3 +257,51 @@ class TestHandlerMonitorIntegration:
             await handle_connection(reader, writer, upstream, monitor=mock_monitor)
 
             mock_monitor.record_error.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# F-RL10: _read_chunked_body trailer consumption
+# ---------------------------------------------------------------------------
+class TestReadChunkedBodyTrailers:
+    """Test F-RL10: _read_chunked_body consumes trailing CRLF and optional trailers."""
+
+    @pytest.mark.asyncio
+    async def test_basic_chunked_body_no_trailers(self):
+        """Basic chunked body without trailers is dechunked correctly."""
+        from proxy_relay.handler import _read_chunked_body
+
+        # "5\r\nhello\r\n0\r\n\r\n"
+        raw = b"5\r\nhello\r\n0\r\n\r\n"
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        reader.read = AsyncMock(return_value=b"")  # No additional data needed
+
+        body = await _read_chunked_body(reader, raw, 1024)
+        assert body == b"hello"
+
+    @pytest.mark.asyncio
+    async def test_chunked_body_with_trailers(self):
+        """Chunked body with trailer headers is dechunked; trailers are consumed."""
+        from proxy_relay.handler import _read_chunked_body
+
+        # "5\r\nhello\r\n0\r\nX-Trailer: v\r\n\r\n"
+        raw = b"5\r\nhello\r\n0\r\nX-Trailer: v\r\n\r\n"
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        reader.read = AsyncMock(return_value=b"")
+
+        body = await _read_chunked_body(reader, raw, 1024)
+        assert body == b"hello"
+
+    @pytest.mark.asyncio
+    async def test_chunked_body_multiple_trailers(self):
+        """Multiple trailer headers are all consumed."""
+        from proxy_relay.handler import _read_chunked_body
+
+        raw = b"3\r\nabc\r\n0\r\nX-A: 1\r\nX-B: 2\r\n\r\n"
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        reader.read = AsyncMock(return_value=b"")
+
+        body = await _read_chunked_body(reader, raw, 1024)
+        assert body == b"abc"

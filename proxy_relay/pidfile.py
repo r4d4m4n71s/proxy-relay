@@ -17,6 +17,7 @@ import json
 import os
 import signal
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,9 @@ _DEFAULT_PROFILE: str = "browse"
 
 # Track paths already registered with atexit to avoid duplicate registrations
 # when write_pid() is called multiple times for the same path.
+# Protected by _atexit_lock because write_pid() may be called from a
+# thread-pool thread via asyncio.to_thread() (F-RL6).
+_atexit_lock = threading.Lock()
 _atexit_registered: set[Path] = set()
 
 
@@ -98,9 +102,10 @@ def write_pid(path: Path = PID_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(str(os.getpid()), encoding="utf-8")
     os.chmod(path, 0o600)
-    if path not in _atexit_registered:
-        atexit.register(remove_pid, path)
-        _atexit_registered.add(path)
+    with _atexit_lock:
+        if path not in _atexit_registered:
+            atexit.register(remove_pid, path)
+            _atexit_registered.add(path)
     log.debug("PID %d written to %s", os.getpid(), path)
 
 
@@ -277,3 +282,48 @@ def read_status(path: Path = STATUS_PATH) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError) as exc:
         log.debug("Could not read status from %s: %s", path, exc)
         return None
+
+
+# ------------------------------------------------------------------
+# Liveness-checked status reading (F-RL4)
+# ------------------------------------------------------------------
+
+
+def _try_remove(path: Path) -> None:
+    """Best-effort removal of a path. Logs failures at DEBUG level."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        log.debug("Could not remove %s: %s", path, exc)
+
+
+def read_status_if_alive(profile: str) -> tuple[bool, int | None, dict[str, Any] | None]:
+    """Read the status file only if the associated PID is alive.
+
+    When the PID file refers to a dead process (crash, OOM, SIGKILL),
+    both the stale ``.pid`` and ``.status.json`` files are cleaned up
+    automatically.
+
+    Args:
+        profile: proxy-st profile name.
+
+    Returns:
+        Tuple of (is_running, pid, status_data).
+        ``status_data`` is ``None`` when the process is not running.
+    """
+    pid_p = pid_path_for(profile)
+    status_p = status_path_for(profile)
+
+    pid = read_pid(pid_p)
+    running = pid is not None and is_process_running(pid)
+
+    if not running:
+        # Clean up stale files left behind by a crashed process.
+        if pid is not None:
+            _try_remove(pid_p)
+        if status_p.exists():
+            _try_remove(status_p)
+            log.debug("Removed stale status file: %s", status_p)
+        return False, pid, None
+
+    return True, pid, read_status(status_p)

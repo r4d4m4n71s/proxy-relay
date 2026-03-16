@@ -28,6 +28,10 @@ _STREAM_CHUNK_SIZE: int = 8192
 # Read timeout for the upstream response (seconds)
 _RESPONSE_TIMEOUT: float = 60.0
 
+# Maximum total response size for plain HTTP forwarding (100 MiB).
+# CONNECT tunnel streaming is NOT capped (opaque byte relay).
+_MAX_RESPONSE_SIZE: int = 100 * 1024 * 1024
+
 
 async def forward_http_request(
     method: str,
@@ -103,9 +107,16 @@ async def forward_http_request(
             )
             if not chunk:
                 break
+            total_bytes += len(chunk)
+            if total_bytes > _MAX_RESPONSE_SIZE:
+                log.warning(
+                    "Response for %s %s exceeds %d bytes — aborting",
+                    method, url, _MAX_RESPONSE_SIZE,
+                )
+                await send_error(client_writer, 502, "Bad Gateway")
+                return False
             client_writer.write(chunk)
             await client_writer.drain()
-            total_bytes += len(chunk)
 
         elapsed_ms = (time.monotonic() - start) * 1000
         log.info(

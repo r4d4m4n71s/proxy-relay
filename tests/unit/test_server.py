@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from proxy_relay.config import MonitorConfig
-from proxy_relay.server import ProxyServer
+from proxy_relay.server import ProxyServer, _mask_url
 from proxy_relay.upstream import UpstreamInfo, UpstreamManager
 
 
@@ -245,3 +245,73 @@ class TestProxyServerStopShutdownsMonitor:
             await server.stop()
 
         assert server._shutdown_event.is_set()
+
+
+# ---------------------------------------------------------------------------
+# F-RL7: _mask_url
+# ---------------------------------------------------------------------------
+class TestMaskUrl:
+    """Test URL credential masking helper (F-RL7)."""
+
+    def test_mask_url_with_credentials(self):
+        """Credentials are replaced with ***."""
+        assert _mask_url("socks5://user:pass@1.2.3.4:1080") == "socks5://***@1.2.3.4:1080"
+
+    def test_mask_url_without_credentials(self):
+        """URL without credentials is returned unchanged."""
+        assert _mask_url("socks5://1.2.3.4:1080") == "socks5://1.2.3.4:1080"
+
+    def test_mask_url_no_scheme(self):
+        """URL without scheme is returned unchanged."""
+        assert _mask_url("user:pass@host:1080") == "user:pass@host:1080"
+
+    def test_mask_url_empty_string(self):
+        """Empty string is returned unchanged."""
+        assert _mask_url("") == ""
+
+    def test_mask_url_complex_credentials(self):
+        """Complex credentials with special chars are masked."""
+        assert _mask_url("socks5://u%40sr:p%3Ass@host:1080") == "socks5://***@host:1080"
+
+
+# ---------------------------------------------------------------------------
+# F-RL11: SIGPIPE handler in start()
+# ---------------------------------------------------------------------------
+class TestSigpipeInStart:
+    """Test F-RL11: SIGPIPE handler is installed during server start."""
+
+    @pytest.mark.asyncio
+    async def test_sigpipe_handler_installed_on_start(self):
+        """start() should install a SIGPIPE handler in the event loop."""
+        import signal as _signal
+
+        if not hasattr(_signal, "SIGPIPE"):
+            pytest.skip("SIGPIPE not available on this platform")
+
+        mgr = MagicMock(spec=UpstreamManager)
+        mgr.get_upstream.return_value = UpstreamInfo(
+            host="proxy.example.com", port=12322,
+            username="user", password="pass",
+            url="socks5://***@proxy.example.com:12322", country="us",
+        )
+        server = ProxyServer(host="127.0.0.1", port=18090, upstream_manager=mgr)
+
+        signal_handlers: dict[int, object] = {}
+
+        mock_loop = MagicMock()
+        mock_loop.add_signal_handler = MagicMock(
+            side_effect=lambda sig, cb: signal_handlers.__setitem__(sig, cb)
+        )
+
+        with patch("asyncio.start_server", new_callable=AsyncMock) as mock_start, \
+             patch("proxy_relay.server.write_pid"), \
+             patch("proxy_relay.server.write_status"), \
+             patch("asyncio.get_running_loop", return_value=mock_loop):
+            mock_srv = AsyncMock()
+            mock_srv.sockets = [MagicMock()]
+            mock_srv.sockets[0].getsockname.return_value = ("127.0.0.1", 18090)
+            mock_start.return_value = mock_srv
+
+            await server.start()
+
+        assert _signal.SIGPIPE in signal_handlers

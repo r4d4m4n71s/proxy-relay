@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import threading
 
 import pytest
 
@@ -249,3 +250,107 @@ class TestPidfileConstants:
         from proxy_relay.pidfile import STATUS_PATH
 
         assert STATUS_PATH is not None
+
+
+# ---------------------------------------------------------------------------
+# F-RL4: read_status_if_alive
+# ---------------------------------------------------------------------------
+class TestReadStatusIfAlive:
+    """Test liveness-checked status reading (F-RL4)."""
+
+    def test_alive_process_returns_running_and_data(self, tmp_path):
+        """When PID is alive, returns (True, pid, status_data)."""
+        from unittest.mock import patch
+
+        from proxy_relay.pidfile import read_status_if_alive, write_pid, write_status
+
+        profile = "testprofile"
+
+        with patch("proxy_relay.pidfile.CONFIG_DIR", tmp_path):
+            pid_p = tmp_path / f"{profile}.pid"
+            status_p = tmp_path / f"{profile}.status.json"
+            write_pid(pid_p)
+            write_status(
+                host="127.0.0.1", port=8080, upstream_url="socks5://proxy:1080",
+                country="us", active_connections=0, total_connections=0, path=status_p,
+            )
+
+            running, pid, data = read_status_if_alive(profile)
+
+        assert running is True
+        assert pid == os.getpid()
+        assert data is not None
+        assert data["host"] == "127.0.0.1"
+
+    def test_stale_pid_cleans_up_files(self, tmp_path):
+        """When PID is dead, stale .pid and .status.json files are removed."""
+        from unittest.mock import patch
+
+        from proxy_relay.pidfile import read_status_if_alive
+
+        profile = "staleprofile"
+
+        with patch("proxy_relay.pidfile.CONFIG_DIR", tmp_path):
+            pid_p = tmp_path / f"{profile}.pid"
+            status_p = tmp_path / f"{profile}.status.json"
+            # Write a PID that does not exist (high PID number)
+            pid_p.write_text("4194304", encoding="utf-8")
+            status_p.write_text('{"host":"127.0.0.1"}', encoding="utf-8")
+
+            running, pid, data = read_status_if_alive(profile)
+
+        assert running is False
+        assert pid == 4194304
+        assert data is None
+        assert not pid_p.exists()
+        assert not status_p.exists()
+
+    def test_no_pid_file_returns_not_running(self, tmp_path):
+        """When no PID file exists, returns (False, None, None)."""
+        from unittest.mock import patch
+
+        from proxy_relay.pidfile import read_status_if_alive
+
+        with patch("proxy_relay.pidfile.CONFIG_DIR", tmp_path):
+            running, pid, data = read_status_if_alive("nofile")
+
+        assert running is False
+        assert pid is None
+        assert data is None
+
+
+# ---------------------------------------------------------------------------
+# F-RL6: _atexit_lock thread safety
+# ---------------------------------------------------------------------------
+class TestAtexitLockThreadSafety:
+    """Test that write_pid is thread-safe for _atexit_registered (F-RL6)."""
+
+    def test_concurrent_write_pid_no_duplicates(self, tmp_path):
+        """Calling write_pid from two threads registers each path exactly once."""
+        from proxy_relay.pidfile import _atexit_registered, write_pid
+
+        path_a = tmp_path / "a.pid"
+        path_b = tmp_path / "b.pid"
+
+        # Clear module-level set for this test
+        _atexit_registered.discard(path_a)
+        _atexit_registered.discard(path_b)
+
+        errors: list[Exception] = []
+
+        def _write(p):
+            try:
+                write_pid(p)
+            except Exception as exc:
+                errors.append(exc)
+
+        t1 = threading.Thread(target=_write, args=(path_a,))
+        t2 = threading.Thread(target=_write, args=(path_b,))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert not errors
+        assert path_a in _atexit_registered
+        assert path_b in _atexit_registered

@@ -19,6 +19,7 @@ from proxy_relay.pidfile import (
     pid_path_for,
     read_pid,
     read_status,
+    read_status_if_alive,
     remove_pid,
     send_signal,
     status_path_for,
@@ -397,9 +398,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         Exit code (0 for success, non-zero for error).
     """
     profile = args.profile or "browse"
-    pid = read_pid(pid_path_for(profile))
-    running = pid is not None and is_process_running(pid)
-    status_data = read_status(status_path_for(profile))
+    running, pid, status_data = read_status_if_alive(profile)
 
     if args.json_output:
         output: dict = {
@@ -754,6 +753,12 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
 
 def main() -> None:
     """Entry point for the proxy-relay CLI."""
+    # Ensure SIGPIPE does not terminate the process on broken-pipe writes (F-RL11).
+    import signal as _signal
+
+    if hasattr(_signal, "SIGPIPE"):
+        _signal.signal(_signal.SIGPIPE, _signal.SIG_IGN)
+
     parser = build_parser()
     args = parser.parse_args()
 

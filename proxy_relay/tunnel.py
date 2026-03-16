@@ -138,7 +138,7 @@ async def relay_data(
     client_writer: asyncio.StreamWriter,
     remote_reader: asyncio.StreamReader,
     remote_writer: asyncio.StreamWriter,
-) -> None:
+) -> bool:
     """Bidirectional byte relay between client and remote streams.
 
     Runs two concurrent tasks: one copying client->remote and one copying
@@ -150,6 +150,10 @@ async def relay_data(
         client_writer: Writer to the local client (browser).
         remote_reader: Reader from the remote target (via SOCKS5 tunnel).
         remote_writer: Writer to the remote target (via SOCKS5 tunnel).
+
+    Returns:
+        True if relay completed cleanly (one side reached EOF).
+        False if an unexpected exception occurred in a relay task.
     """
     async def _pipe(
         reader: asyncio.StreamReader,
@@ -203,8 +207,12 @@ async def relay_data(
         except asyncio.CancelledError:
             pass
 
-    # Check for exceptions in completed tasks
+    # Check for exceptions in completed tasks (F-RL8: elevate to WARNING).
+    had_error = False
     for task in done:
         exc = task.exception()
         if exc is not None:
-            log.debug("Relay task exception: %s", exc)
+            log.warning("Relay task exception (connection may be unclean): %s", exc)
+            had_error = True
+
+    return not had_error
