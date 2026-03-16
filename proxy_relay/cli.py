@@ -261,9 +261,10 @@ def _cmd_start(args: argparse.Namespace) -> int:
     configure_logging(log_level)
 
     # Validate CLI-supplied port range before using the value
-    if args.port is not None and not (1 <= args.port <= 65535):
+    # Port 0 is valid — the OS assigns an ephemeral port (used by browse auto-start).
+    if args.port is not None and not (0 <= args.port <= 65535):
         print(
-            f"Invalid --port {args.port!r}: must be an integer in 1-65535",
+            f"Invalid --port {args.port!r}: must be an integer in 0-65535",
             file=sys.stderr,
         )
         return 1
