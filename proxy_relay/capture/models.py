@@ -37,6 +37,32 @@ def is_json_mime(mime_type: str) -> bool:
     """Return True if *mime_type* indicates a JSON response body."""
     mt = mime_type.lower().split(";")[0].strip()
     return mt in JSON_MIME_TYPES or mt.endswith("+json")
+
+
+# MIME prefixes that are binary — never worth fetching the body for analysis.
+_BINARY_MIME_PREFIXES: tuple[str, ...] = (
+    "image/",
+    "audio/",
+    "video/",
+    "font/",
+    "application/octet-stream",
+    "application/wasm",
+)
+
+
+def should_capture_body(mime_type: str) -> bool:
+    """Return True if the response body is worth capturing.
+
+    Captures JSON, text, XML, and empty/unknown MIME types (which often
+    indicate API responses where CDP didn't report a Content-Type).
+    Skips binary content (images, audio, video, fonts, wasm).
+    """
+    if not mime_type:
+        return True  # empty MIME — likely an API response, worth trying
+    mt = mime_type.lower().split(";")[0].strip()
+    if mt.startswith(_BINARY_MIME_PREFIXES):
+        return False
+    return True
 COOKIE_POLL_INTERVAL_S: float = 30.0
 STORAGE_POLL_INTERVAL_S: float = 60.0
 

@@ -252,15 +252,15 @@ class CaptureSession:
         log.info("Capture session started")
 
     def _make_response_handler(self, collector: Any) -> Any:
-        """Build an async callback that fetches JSON response bodies via CDP.
+        """Build an async callback that fetches response bodies via CDP.
 
         The returned coroutine function is registered as the
-        ``Network.responseReceived`` subscriber.  For JSON MIME types on
+        ``Network.responseReceived`` subscriber.  For non-binary MIME types on
         matching domains it calls ``Network.getResponseBody`` to retrieve the
-        actual body before forwarding to the collector.  Non-JSON or
+        actual body before forwarding to the collector.  Binary or
         non-matching responses are forwarded with ``body=None``.
         """
-        from proxy_relay.capture.models import is_json_mime
+        from proxy_relay.capture.models import should_capture_body
 
         cdp = self._cdp
 
@@ -272,7 +272,7 @@ class CaptureSession:
 
             body: str | None = None
 
-            if request_id and is_json_mime(mime_type) and collector.matches_domain(url):
+            if request_id and should_capture_body(mime_type) and collector.matches_domain(url):
                 try:
                     result = await cdp.send(
                         "Network.getResponseBody", {"requestId": request_id},

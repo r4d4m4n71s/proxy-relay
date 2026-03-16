@@ -207,3 +207,88 @@ class TestIsJsonMime:
         from proxy_relay.capture.models import is_json_mime
 
         assert is_json_mime("Application/JSON") is True
+
+
+# ---------------------------------------------------------------------------
+# should_capture_body
+# ---------------------------------------------------------------------------
+
+
+class TestShouldCaptureBody:
+    """Verify body capture MIME filtering."""
+
+    def test_empty_mime_captured(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("") is True
+
+    def test_json_captured(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("application/json") is True
+
+    def test_vendor_json_captured(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("application/vnd.api+json") is True
+
+    def test_text_plain_captured(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("text/plain") is True
+
+    def test_text_xml_captured(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("text/xml") is True
+
+    def test_text_html_captured(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("text/html") is True
+
+    def test_image_png_skipped(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("image/png") is False
+
+    def test_image_jpeg_skipped(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("image/jpeg") is False
+
+    def test_audio_mpeg_skipped(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("audio/mpeg") is False
+
+    def test_video_mp4_skipped(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("video/mp4") is False
+
+    def test_font_woff2_skipped(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("font/woff2") is False
+
+    def test_octet_stream_skipped(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("application/octet-stream") is False
+
+    def test_wasm_skipped(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("application/wasm") is False
+
+    def test_mime_with_charset_captured(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("application/json; charset=utf-8") is True
+
+    def test_case_insensitive(self):
+        from proxy_relay.capture.models import should_capture_body
+
+        assert should_capture_body("Image/PNG") is False
+        assert should_capture_body("APPLICATION/JSON") is True
