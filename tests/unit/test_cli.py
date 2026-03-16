@@ -319,6 +319,78 @@ class TestCmdStart:
         args = parser.parse_args(["start"])
         assert args.config is None
 
+    def test_timezone_check_uses_pst_config_not_upstream_manager(self):
+        """F-RL9: timezone check reads country from proxy-st config directly.
+
+        No UpstreamManager should be created for the timezone check.
+        """
+        from unittest.mock import MagicMock
+        from proxy_relay.cli import _cmd_start
+        from proxy_relay.config import AntiLeakConfig, RelayConfig
+
+        config = RelayConfig()
+        config.anti_leak = AntiLeakConfig(warn_timezone_mismatch=True)
+
+        args = argparse.Namespace(
+            host=None, port=None, profile=None, log_level=None, config=None,
+        )
+
+        pst_profile = MagicMock()
+        pst_profile.country = "co"
+        pst_config = MagicMock()
+        pst_config.profiles = {"browse": pst_profile}
+
+        upstream_manager_calls: list[str] = []
+
+        class TrackingUpstreamManager:
+            def __init__(self, *a, **kw):
+                upstream_manager_calls.append("created")
+
+        with patch("proxy_relay.cli.RelayConfig.load", return_value=config), \
+             patch("proxy_relay.cli.read_pid", return_value=None), \
+             patch("proxy_relay.cli.is_process_running", return_value=False), \
+             patch("proxy_relay.cli.configure_logging"), \
+             patch("proxy_relay.cli.UpstreamManager", TrackingUpstreamManager), \
+             patch("proxy_relay.cli.asyncio.run", side_effect=KeyboardInterrupt), \
+             patch("proxy_relay.cli.check_timezone_mismatch") as mock_tz, \
+             patch("proxy_relay.upstream.UpstreamManager", TrackingUpstreamManager):
+            # Patch the lazy import inside _cmd_start
+            import sys
+            fake_pst_config_module = MagicMock()
+            fake_pst_config_module.AppConfig.load.return_value = pst_config
+            with patch.dict(sys.modules, {"proxy_st.config": fake_pst_config_module}):
+                _cmd_start(args)
+
+        # timezone check should have been called with the country from pst_config
+        mock_tz.assert_called_once_with("co")
+        # UpstreamManager should NOT have been created for the timezone check
+        assert upstream_manager_calls == []
+
+    def test_timezone_check_exception_logs_warning_and_continues(self):
+        """F-RL9: exception during timezone check is swallowed with a warning."""
+        from proxy_relay.cli import _cmd_start
+        from proxy_relay.config import AntiLeakConfig, RelayConfig
+
+        config = RelayConfig()
+        config.anti_leak = AntiLeakConfig(warn_timezone_mismatch=True)
+
+        args = argparse.Namespace(
+            host=None, port=None, profile=None, log_level=None, config=None,
+        )
+
+        import sys
+        broken_module = MagicMock()
+        broken_module.AppConfig.load.side_effect = RuntimeError("pst unavailable")
+
+        with patch("proxy_relay.cli.RelayConfig.load", return_value=config), \
+             patch("proxy_relay.cli.read_pid", return_value=None), \
+             patch("proxy_relay.cli.is_process_running", return_value=False), \
+             patch("proxy_relay.cli.configure_logging"), \
+             patch("proxy_relay.cli.asyncio.run", side_effect=KeyboardInterrupt), \
+             patch.dict(sys.modules, {"proxy_st.config": broken_module}):
+            # Should not raise — exception is swallowed as a warning
+            _cmd_start(args)
+
 
 class TestMain:
     """Test main() entry point."""

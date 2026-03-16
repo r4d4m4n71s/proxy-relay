@@ -64,34 +64,41 @@ class UpstreamManager:
     def _ensure_loaded(self) -> None:
         """Lazy-load proxy-st config and session store on first use.
 
+        Uses double-checked locking so concurrent callers (via
+        ``asyncio.to_thread()``) load the config exactly once.
+
         Raises:
             UpstreamError: If proxy-st is not installed or config is invalid.
         """
-        if self._config is not None:
+        if self._config is not None:  # fast path — no lock
             return
 
-        try:
-            from proxy_st.config import AppConfig
-            from proxy_st.session_store import SessionStore
-        except ImportError as exc:
-            raise UpstreamError(
-                "proxy-st is not installed. Install it with: pip install proxy-st"
-            ) from exc
+        with self._lock:
+            if self._config is not None:  # re-check under lock
+                return
 
-        try:
-            self._config = AppConfig.load()
-            self._session_store = SessionStore()
-        except Exception as exc:
-            raise UpstreamError(f"Failed to load proxy-st configuration: {exc}") from exc
+            try:
+                from proxy_st.config import AppConfig
+                from proxy_st.session_store import SessionStore
+            except ImportError as exc:
+                raise UpstreamError(
+                    "proxy-st is not installed. Install it with: pip install proxy-st"
+                ) from exc
 
-        if self._profile_name not in self._config.profiles:
-            available = ", ".join(sorted(self._config.profiles))
-            raise UpstreamError(
-                f"proxy-st profile {self._profile_name!r} not found. "
-                f"Available profiles: {available}"
-            )
+            try:
+                self._config = AppConfig.load()
+                self._session_store = SessionStore()
+            except Exception as exc:
+                raise UpstreamError(f"Failed to load proxy-st configuration: {exc}") from exc
 
-        log.info("proxy-st loaded, using profile %r", self._profile_name)
+            if self._profile_name not in self._config.profiles:
+                available = ", ".join(sorted(self._config.profiles))
+                raise UpstreamError(
+                    f"proxy-st profile {self._profile_name!r} not found. "
+                    f"Available profiles: {available}"
+                )
+
+            log.info("proxy-st loaded, using profile %r", self._profile_name)
 
     def _build_url(self) -> str:
         """Build the upstream SOCKS5 URL from proxy-st config.
