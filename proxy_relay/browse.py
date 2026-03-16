@@ -121,6 +121,7 @@ def _chrome_args(
     proxy_port: int | None = None,
     timezone: str | None = None,
     cdp_port: int | None = None,
+    start_url: str | None = None,
 ) -> tuple[list[str], dict[str, str] | None]:
     """Build Chromium command-line and environment with anti-leak flags.
 
@@ -133,6 +134,7 @@ def _chrome_args(
     - ``--start-maximized``
     - ``TZ`` environment variable (when *timezone* is not ``None``)
     - ``--remote-debugging-port`` (when *cdp_port* is not ``None``)
+    - *start_url* as the initial page (positional arg, appended last)
 
     Args:
         chromium_path: Path to the Chromium binary.
@@ -142,6 +144,7 @@ def _chrome_args(
         timezone: IANA timezone name for ``TZ`` env override.
         cdp_port: TCP port for ``--remote-debugging-port``. ``None`` means
             no CDP flags.
+        start_url: URL to open on launch. ``None`` means browser default.
 
     Returns:
         Tuple of (command_args, env_dict_or_None).
@@ -155,8 +158,6 @@ def _chrome_args(
         "--disable-sync",
         "--disable-webrtc-stun-origin",
         "--enforce-webrtc-ip-permission-check",
-        "--disable-background-networking",
-        "--disable-component-update",
     ]
 
     if proxy_port is not None:
@@ -166,6 +167,10 @@ def _chrome_args(
 
     if cdp_port is not None:
         cmd.append(f"--remote-debugging-port={cdp_port}")
+
+    # Start URL must be the last positional argument
+    if start_url:
+        cmd.append(start_url)
 
     env: dict[str, str] | None = None
     if timezone:
@@ -780,6 +785,7 @@ class BrowseSupervisor:
         rotate_interval_min: int = 30,
         timezone: str | None = None,
         capture_session: object | None = None,
+        start_url: str | None = None,
     ) -> None:
         self._chromium_path = chromium_path
         self._proxy_host = proxy_host
@@ -789,6 +795,7 @@ class BrowseSupervisor:
         self._rotate_interval_min = rotate_interval_min
         self._timezone = timezone
         self._capture = capture_session
+        self._start_url = start_url
         self._cdp_port: int | None = (
             capture_session.cdp_port if capture_session is not None else None  # type: ignore[union-attr]
         )
@@ -882,6 +889,7 @@ class BrowseSupervisor:
             proxy_port=self._proxy_port,
             timezone=self._timezone,
             cdp_port=self._cdp_port,
+            start_url=self._start_url,
         )
 
         if self._timezone:

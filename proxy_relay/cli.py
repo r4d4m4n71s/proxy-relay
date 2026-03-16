@@ -198,6 +198,13 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: tidal.com,qobuz.com). Only used with --capture."
         ),
     )
+    browse_parser.add_argument(
+        "--start-url",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="URL to open on browser launch (default: browser new-tab page).",
+    )
 
     # ── analyze ────────────────────────────────────────────────────────
     analyze_parser = subparsers.add_parser(
@@ -645,7 +652,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
             if raw_domains_arg:
                 domains = frozenset(d.strip() for d in raw_domains_arg.split(",") if d.strip())
             elif config.capture is not None:
-                domains = config.capture.capture_domains  # type: ignore[union-attr]
+                domains = config.capture.domains  # type: ignore[union-attr]
             else:
                 domains = DEFAULT_CAPTURE_DOMAINS
 
@@ -677,6 +684,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
             rotate_interval_min=rotate_min,
             timezone=proxy_tz,
             capture_session=capture_session,
+            start_url=getattr(args, "start_url", None),
         )
 
         if rotate_min > 0:
