@@ -94,6 +94,7 @@ class CaptureSession:
         self._stop_event: asyncio.Event | None = None
         self._writer: Any | None = None
         self._cdp: Any | None = None
+        self._collector: Any | None = None
         self._poll_tasks: list[asyncio.Task[None]] = []
         self._thread: threading.Thread | None = None
 
@@ -218,6 +219,7 @@ class CaptureSession:
             config=self._config,
             profile=self._profile,
         )
+        self._collector = collector
 
         # Subscribe to Network events
         await self._cdp.subscribe("Network.requestWillBeSent", collector.on_request)
@@ -416,36 +418,129 @@ class CaptureSession:
                         except Exception:
                             pass  # Object store may be empty or inaccessible
 
+    async def _reconnect_cdp(self) -> None:
+        """Reconnect to CDP after an unexpected WebSocket disconnect.
+
+        Re-creates the CdpClient, enables domains, and re-subscribes the
+        existing collector to CDP events.  Reuses the same writer and
+        collector so captured data continues flowing to the same DB.
+        """
+        import sys
+
+        _pkg = sys.modules[__name__]
+        _CdpClient = getattr(_pkg, "CdpClient", None)
+
+        # Close old client if still around
+        if self._cdp is not None:
+            try:
+                await self._cdp.close()
+            except Exception:
+                pass
+
+        cdp_port = self._cdp_port_cache
+        if cdp_port is None or _CdpClient is None:
+            raise RuntimeError("Cannot reconnect: no CDP port or CdpClient class")
+
+        self._cdp = _CdpClient()
+        await self._cdp.connect(cdp_port)
+
+        # Re-enable CDP domains
+        await self._cdp.send("Network.enable", {"maxPostDataSize": self._config.max_body_bytes})
+        await self._cdp.send("Page.enable")
+
+        # Re-subscribe collector to events
+        collector = self._collector
+        if collector is None:
+            raise RuntimeError("Cannot reconnect: no collector")
+
+        await self._cdp.subscribe("Network.requestWillBeSent", collector.on_request)
+        await self._cdp.subscribe(
+            "Network.responseReceived",
+            self._make_response_handler(collector),
+        )
+        await self._cdp.subscribe(
+            "Network.webSocketFrameSent",
+            lambda params: collector.on_websocket_frame("sent", params),
+        )
+        await self._cdp.subscribe(
+            "Network.webSocketFrameReceived",
+            lambda params: collector.on_websocket_frame("received", params),
+        )
+        await self._cdp.subscribe("Page.frameNavigated", collector.on_navigation)
+
     async def run_until_stopped(self) -> None:
         """Gather CDP recv_loop and poll tasks, waiting for the stop event.
 
-        Returns when ``request_stop()`` is called or when the CDP connection
-        closes unexpectedly.
+        Returns when ``request_stop()`` is called.  If the CDP WebSocket
+        disconnects (e.g. page navigation, target change), the session
+        automatically reconnects and re-subscribes to CDP events.
         """
         if self._stop_event is None or self._cdp is None:
             return
 
-        tasks: list[asyncio.Task[None]] = list(self._poll_tasks)
+        max_reconnects = 50
+        reconnect_delay = 2.0
 
-        # Use the existing recv_loop task started by connect() — do NOT
-        # create a second one (two concurrent recv() on the same WebSocket
-        # causes immediate disconnection).
-        if self._cdp._recv_task is not None:
-            tasks.append(self._cdp._recv_task)
+        for attempt in range(max_reconnects):
+            if self._stop_event.is_set():
+                break
 
-        # Wait for stop event or for any task to finish
-        stop_wait = asyncio.create_task(self._stop_event.wait(), name="stop-wait")
-        tasks_set = set(tasks + [stop_wait])
+            tasks: list[asyncio.Task[None]] = list(self._poll_tasks)
 
-        done, pending = await asyncio.wait(
-            tasks_set, return_when=asyncio.FIRST_COMPLETED
-        )
+            # Use the existing recv_loop task started by connect() — do NOT
+            # create a second one (two concurrent recv() on the same WebSocket
+            # causes immediate disconnection).
+            if self._cdp is not None and self._cdp._recv_task is not None:
+                tasks.append(self._cdp._recv_task)
 
-        # Cancel remaining tasks
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+            # Wait for stop event or for any task to finish
+            stop_wait = asyncio.create_task(self._stop_event.wait(), name="stop-wait")
+            tasks_set = set(tasks + [stop_wait])
+
+            done, pending = await asyncio.wait(
+                tasks_set, return_when=asyncio.FIRST_COMPLETED
+            )
+
+            # If stop was requested, clean up and exit
+            if self._stop_event.is_set():
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                break
+
+            # CDP recv_task finished unexpectedly — attempt reconnect
+            stop_wait.cancel()
+            try:
+                await stop_wait
+            except asyncio.CancelledError:
+                pass
+
+            log.warning(
+                "CDP connection lost (attempt %d/%d), reconnecting in %.0fs...",
+                attempt + 1, max_reconnects, reconnect_delay,
+            )
+
+            # Wait for reconnect_delay but wake immediately if stop requested
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=reconnect_delay)
+                # stop_event was set during the delay — exit
+                break
+            except asyncio.TimeoutError:
+                pass  # Normal: delay elapsed, proceed with reconnect
+
+            if self._stop_event.is_set():
+                break
+
+            try:
+                await self._reconnect_cdp()
+                log.info("CDP reconnected successfully")
+            except Exception:
+                log.warning("CDP reconnect failed", exc_info=True)
+                # Keep trying until max_reconnects or stop_event
+                continue
+        else:
+            log.error("CDP reconnect limit reached (%d), stopping capture", max_reconnects)
 
         log.debug("run_until_stopped exited")
 
