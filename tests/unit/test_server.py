@@ -174,3 +174,74 @@ class TestProxyServerMonitorConfig:
 
         # Monitor should have been created
         assert server.monitor_stats is not None
+
+
+class TestProxyServerStopShutdownsMonitor:
+    """Test F-RL3: stop() signals ConnectionMonitor.shutdown() before setting event."""
+
+    @pytest.mark.asyncio
+    async def test_stop_calls_monitor_shutdown(self, tmp_path):
+        """stop() must call monitor.shutdown() so rotation callbacks are suppressed."""
+        from proxy_relay.monitor import ConnectionMonitor
+
+        mgr = MagicMock(spec=UpstreamManager)
+        mgr.get_upstream.return_value = UpstreamInfo(
+            host="proxy.example.com", port=12322,
+            username="user", password="pass",
+            url="socks5://***@proxy.example.com:12322", country="us",
+        )
+        mgr.profile_name = "browse"
+
+        monitor_cfg = MonitorConfig(enabled=True, slow_threshold_ms=1000.0, error_threshold_count=3)
+        server = ProxyServer(
+            host="127.0.0.1", port=18085,
+            upstream_manager=mgr,
+            monitor_config=monitor_cfg,
+        )
+        server._status_path = tmp_path / "test.status.json"
+        server._pid_path = tmp_path / "test.pid"
+
+        with patch("asyncio.start_server", new_callable=AsyncMock) as mock_start, \
+             patch("proxy_relay.server.write_pid"), \
+             patch("proxy_relay.server.remove_pid"), \
+             patch("proxy_relay.server.write_status"):
+            mock_srv = AsyncMock()
+            mock_srv.sockets = [MagicMock()]
+            mock_srv.sockets[0].getsockname.return_value = ("127.0.0.1", 18085)
+            mock_srv.close = MagicMock()
+            mock_srv.wait_closed = AsyncMock()
+            mock_start.return_value = mock_srv
+
+            with patch("asyncio.get_running_loop") as mock_loop:
+                mock_loop.return_value = MagicMock()
+                await server.start()
+
+        assert server._monitor is not None
+        assert not server._monitor._shutdown  # not yet shut down
+
+        await server.stop()
+
+        # Monitor must be shut down before shutdown_event is set
+        assert server._monitor._shutdown is True
+        assert server._shutdown_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_stop_without_monitor_does_not_raise(self, tmp_path):
+        """stop() works correctly when no monitor is configured."""
+        mgr = MagicMock(spec=UpstreamManager)
+        mgr.get_upstream.return_value = UpstreamInfo(
+            host="proxy.example.com", port=12322,
+            username="user", password="pass",
+            url="socks5://***@proxy.example.com:12322", country="us",
+        )
+        mgr.profile_name = "browse"
+
+        server = ProxyServer(host="127.0.0.1", port=18086, upstream_manager=mgr)
+        server._status_path = tmp_path / "test.status.json"
+        server._pid_path = tmp_path / "test.pid"
+
+        with patch("proxy_relay.server.remove_pid"), patch("proxy_relay.server.write_status"):
+            # stop() without start() — server is None, should still set shutdown_event
+            await server.stop()
+
+        assert server._shutdown_event.is_set()

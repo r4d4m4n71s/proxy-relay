@@ -285,14 +285,17 @@ def _cmd_start(args: argparse.Namespace) -> int:
     log.info("proxy-relay %s starting", __version__)
     log.info("Config: bind=%s:%d, profile=%s", host, port, profile_name)
 
-    # Timezone mismatch check
+    # Timezone mismatch check — read country directly from proxy-st profile config
+    # to avoid creating a throwaway UpstreamManager (which loads SessionStore and
+    # may trigger a spurious session rotation).
     if config.anti_leak.warn_timezone_mismatch:
         try:
-            manager = UpstreamManager(profile_name)
-            upstream = manager.get_upstream()
-            if upstream.country:
-                check_timezone_mismatch(upstream.country)
-        except UpstreamError as exc:
+            from proxy_st.config import AppConfig as PstConfig
+            pst_cfg = PstConfig.load()
+            pst_profile = pst_cfg.profiles.get(profile_name)
+            if pst_profile and pst_profile.country:
+                check_timezone_mismatch(pst_profile.country.split(",")[0].strip().lower())
+        except Exception as exc:
             log.warning("Could not check timezone: %s", exc)
 
     # Run the server

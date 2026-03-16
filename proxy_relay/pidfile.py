@@ -250,7 +250,7 @@ def write_status(
             except OSError:
                 pass
             raise
-    except OSError as exc:
+    except Exception as exc:
         log.warning("Could not write status file %s: %s", path, exc)
         return
     log.debug("Status written to %s", path)

@@ -169,6 +169,8 @@ class ProxyServer:
             self._server.close()
             await self._server.wait_closed()
             log.info("Server stopped")
+        if self._monitor is not None:
+            self._monitor.shutdown()
         self._shutdown_event.set()
 
     def _signal_shutdown(self) -> None:

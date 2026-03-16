@@ -187,6 +187,52 @@ class TestStatusFile:
         path = tmp_path / "nonexistent.json"
         assert read_status(path) is None
 
+    def test_write_status_swallows_type_error_from_non_serializable_data(self, tmp_path):
+        """F-RL12: write_status does not raise when stats contain non-serializable data.
+
+        json.dumps raises TypeError for non-serializable values; the outer
+        except clause previously only caught OSError, letting TypeError propagate
+        to the connection handler. Fixed to catch Exception.
+        """
+        from proxy_relay.pidfile import write_status
+
+        path = tmp_path / "status.json"
+        # Pass a stats dict with a non-JSON-serializable value
+        non_serializable_stats = {"key": object()}
+
+        # Must not raise — TypeError should be absorbed as a warning
+        write_status(
+            host="127.0.0.1",
+            port=8080,
+            upstream_url="socks5://proxy:1080",
+            country="us",
+            active_connections=0,
+            total_connections=0,
+            stats=non_serializable_stats,
+            path=path,
+        )
+        # File should NOT have been created (write was skipped due to error)
+        assert not path.exists()
+
+    def test_write_status_oserror_is_swallowed(self, tmp_path):
+        """OSError during status write is logged as warning (not raised)."""
+        import unittest.mock as mock
+        from proxy_relay.pidfile import write_status
+
+        path = tmp_path / "status.json"
+
+        with mock.patch("proxy_relay.pidfile.os.replace", side_effect=OSError("disk full")):
+            # Must not raise
+            write_status(
+                host="127.0.0.1",
+                port=8080,
+                upstream_url="socks5://proxy:1080",
+                country="us",
+                active_connections=0,
+                total_connections=0,
+                path=path,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Path constants
