@@ -6,8 +6,9 @@ from pathlib import Path
 
 # NOTE: Do NOT import from proxy_relay.config here — that would create a
 # circular import because config.py lazily imports CaptureConfig from this module.
-DEFAULT_CAPTURE_DB: Path = Path.home() / ".config" / "proxy-relay" / "capture.db"
-DEFAULT_REPORT_DIR: Path = Path.home() / ".config" / "proxy-relay"
+DEFAULT_CAPTURE_DIR: Path = Path.home() / ".config" / "proxy-relay" / "capture"
+DEFAULT_CAPTURE_DB: Path = DEFAULT_CAPTURE_DIR / "capture.db"
+DEFAULT_REPORT_DIR: Path = Path.home() / ".config" / "proxy-relay" / "reports"
 
 DEFAULT_CAPTURE_DOMAINS: frozenset[str] = frozenset({"tidal.com", "qobuz.com"})
 
