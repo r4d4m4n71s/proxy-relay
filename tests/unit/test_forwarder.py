@@ -175,6 +175,61 @@ class TestForwardHttpRequest:
             assert call_args[0][1] == 80
 
     @pytest.mark.asyncio
+    async def test_response_exceeding_max_size_aborts_with_502(self):
+        """F-RL5: Response exceeding _MAX_RESPONSE_SIZE triggers 502."""
+        from proxy_relay.forwarder import _MAX_RESPONSE_SIZE, forward_http_request
+
+        # Create a reader that returns chunks totalling > _MAX_RESPONSE_SIZE
+        chunk_size = 8192
+        # We need enough chunks so total > _MAX_RESPONSE_SIZE
+        chunks_needed = (_MAX_RESPONSE_SIZE // chunk_size) + 2
+        chunk = b"X" * chunk_size
+        side_effects = [chunk] * chunks_needed + [b""]
+
+        mock_remote_reader = AsyncMock(spec=asyncio.StreamReader)
+        mock_remote_reader.read = AsyncMock(side_effect=side_effects)
+
+        mock_remote_writer = AsyncMock(spec=asyncio.StreamWriter)
+        mock_remote_writer.write = MagicMock()
+        mock_remote_writer.close = MagicMock()
+        mock_remote_writer.wait_closed = AsyncMock()
+        mock_remote_writer.drain = AsyncMock()
+
+        client_writer = AsyncMock(spec=asyncio.StreamWriter)
+        client_writer.write = MagicMock()
+        client_writer.drain = AsyncMock()
+        client_writer.close = MagicMock()
+        client_writer.wait_closed = AsyncMock()
+
+        upstream = _make_upstream()
+
+        with patch("proxy_relay.forwarder.open_tunnel", new_callable=AsyncMock) as mock_tunnel:
+            mock_tunnel.return_value = TunnelResult(
+                reader=mock_remote_reader,
+                writer=mock_remote_writer,
+                latency_ms=50.0,
+            )
+
+            result = await forward_http_request(
+                method="GET",
+                url="http://example.com/big",
+                http_version="HTTP/1.1",
+                headers=[("Host", "example.com")],
+                body=b"",
+                upstream=upstream,
+                client_writer=client_writer,
+            )
+
+        # Should return False (aborted)
+        assert result is False
+
+        # Client should have received a 502 error
+        all_writes = b"".join(
+            call.args[0] for call in client_writer.write.call_args_list if call.args
+        )
+        assert b"502" in all_writes
+
+    @pytest.mark.asyncio
     async def test_response_relayed_to_client(self):
         """HTTP response from upstream is relayed back to client."""
         from proxy_relay.forwarder import forward_http_request

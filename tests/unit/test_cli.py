@@ -132,27 +132,21 @@ class TestCmdStatus:
     def test_not_running_returns_1(self):
         """Returns 1 when not running."""
         args = argparse.Namespace(json_output=False, profile=None)
-        with patch("proxy_relay.cli.read_pid", return_value=None), \
-             patch("proxy_relay.cli.is_process_running", return_value=False), \
-             patch("proxy_relay.cli.read_status", return_value=None):
+        with patch("proxy_relay.cli.read_status_if_alive", return_value=(False, None, None)):
             result = _cmd_status(args)
         assert result == 1
 
     def test_running_returns_0(self):
         """Returns 0 when running."""
         args = argparse.Namespace(json_output=False, profile=None)
-        with patch("proxy_relay.cli.read_pid", return_value=12345), \
-             patch("proxy_relay.cli.is_process_running", return_value=True), \
-             patch("proxy_relay.cli.read_status", return_value=None):
+        with patch("proxy_relay.cli.read_status_if_alive", return_value=(True, 12345, None)):
             result = _cmd_status(args)
         assert result == 0
 
     def test_json_output_returns_0_when_not_running(self):
         """JSON output returns 0 even when not running."""
         args = argparse.Namespace(json_output=True, profile=None)
-        with patch("proxy_relay.cli.read_pid", return_value=None), \
-             patch("proxy_relay.cli.is_process_running", return_value=False), \
-             patch("proxy_relay.cli.read_status", return_value=None):
+        with patch("proxy_relay.cli.read_status_if_alive", return_value=(False, None, None)):
             result = _cmd_status(args)
         assert result == 0
 
@@ -160,9 +154,7 @@ class TestCmdStatus:
         """JSON output includes status data when available."""
         args = argparse.Namespace(json_output=True, profile=None)
         status = {"host": "127.0.0.1", "port": 8080}
-        with patch("proxy_relay.cli.read_pid", return_value=12345), \
-             patch("proxy_relay.cli.is_process_running", return_value=True), \
-             patch("proxy_relay.cli.read_status", return_value=status):
+        with patch("proxy_relay.cli.read_status_if_alive", return_value=(True, 12345, status)):
             result = _cmd_status(args)
         assert result == 0
         captured = capsys.readouterr()
@@ -175,9 +167,7 @@ class TestCmdStatus:
     def test_json_output_not_running_shows_false(self, capsys):
         """JSON output shows running=false when not running."""
         args = argparse.Namespace(json_output=True, profile=None)
-        with patch("proxy_relay.cli.read_pid", return_value=None), \
-             patch("proxy_relay.cli.is_process_running", return_value=False), \
-             patch("proxy_relay.cli.read_status", return_value=None):
+        with patch("proxy_relay.cli.read_status_if_alive", return_value=(False, None, None)):
             _cmd_status(args)
         captured = capsys.readouterr()
         output = json.loads(captured.out)
@@ -202,9 +192,7 @@ class TestCmdStatus:
                 "p95_latency_ms": 300.0,
             },
         }
-        with patch("proxy_relay.cli.read_pid", return_value=12345), \
-             patch("proxy_relay.cli.is_process_running", return_value=True), \
-             patch("proxy_relay.cli.read_status", return_value=status):
+        with patch("proxy_relay.cli.read_status_if_alive", return_value=(True, 12345, status)):
             result = _cmd_status(args)
         assert result == 0
         captured = capsys.readouterr()
@@ -214,9 +202,7 @@ class TestCmdStatus:
     def test_stale_pid_shows_not_running(self, capsys):
         """Stale PID is displayed in human-readable output."""
         args = argparse.Namespace(json_output=False, profile=None)
-        with patch("proxy_relay.cli.read_pid", return_value=99999), \
-             patch("proxy_relay.cli.is_process_running", return_value=False), \
-             patch("proxy_relay.cli.read_status", return_value=None):
+        with patch("proxy_relay.cli.read_status_if_alive", return_value=(False, 99999, None)):
             result = _cmd_status(args)
         assert result == 1
         captured = capsys.readouterr()
@@ -390,6 +376,57 @@ class TestCmdStart:
              patch.dict(sys.modules, {"proxy_st.config": broken_module}):
             # Should not raise — exception is swallowed as a warning
             _cmd_start(args)
+
+
+class TestCmdStatusWithReadStatusIfAlive:
+    """F-RL4: _cmd_status uses read_status_if_alive instead of separate PID/status reads."""
+
+    def test_stale_pid_cleaned_up_in_status(self, capsys):
+        """Stale PID causes read_status_if_alive to clean up and return not running."""
+        args = argparse.Namespace(json_output=False, profile="testprof")
+        # read_status_if_alive returns (False, stale_pid, None) — files already cleaned up.
+        with patch("proxy_relay.cli.read_status_if_alive", return_value=(False, 99999, None)):
+            result = _cmd_status(args)
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "not running" in captured.out.lower()
+
+    def test_alive_returns_status_data(self, capsys):
+        """Running process returns data from read_status_if_alive."""
+        status = {"host": "127.0.0.1", "port": 8080, "upstream_url": "socks5://p:1080",
+                  "country": "us", "active_connections": 1, "total_connections": 5}
+        args = argparse.Namespace(json_output=True, profile="browse")
+        with patch("proxy_relay.cli.read_status_if_alive", return_value=(True, 12345, status)):
+            result = _cmd_status(args)
+        assert result == 0
+        output = json.loads(capsys.readouterr().out)
+        assert output["running"] is True
+        assert output["host"] == "127.0.0.1"
+
+
+class TestSigpipeHandling:
+    """F-RL11: main() installs SIGPIPE handler."""
+
+    def test_sigpipe_ignored_after_main(self):
+        """After main() runs, SIGPIPE should be SIG_IGN (Linux only)."""
+        import platform
+        import signal as _signal
+
+        if not hasattr(_signal, "SIGPIPE"):
+            pytest.skip("SIGPIPE not available on this platform")
+
+        # Save original handler
+        original = _signal.getsignal(_signal.SIGPIPE)
+        try:
+            from proxy_relay.cli import main
+
+            with patch("sys.argv", ["proxy-relay"]), \
+                 pytest.raises(SystemExit):
+                main()
+
+            assert _signal.getsignal(_signal.SIGPIPE) is _signal.SIG_IGN
+        finally:
+            _signal.signal(_signal.SIGPIPE, original)
 
 
 class TestMain:

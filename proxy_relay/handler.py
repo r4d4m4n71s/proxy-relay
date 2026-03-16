@@ -390,7 +390,13 @@ async def _read_chunked_body(
             raise TunnelError(f"Malformed chunk size: {size_str!r}") from exc
 
         if chunk_size == 0:
-            # Last chunk — consume trailing CRLF (trailers are ignored)
+            # Consume optional trailer headers + terminating CRLF
+            # (RFC 7230 §4.1). _read_line() strips \r\n; an empty
+            # result signals the final blank line (F-RL10).
+            while True:
+                trailer = await _read_line()
+                if not trailer:
+                    break
             break
 
         if len(result) + chunk_size > max_size:

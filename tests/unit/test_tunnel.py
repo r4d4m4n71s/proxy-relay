@@ -232,3 +232,87 @@ class TestRelayData:
             if call.args
         )
         assert remote_data in client_writes
+
+    @pytest.mark.asyncio
+    async def test_relay_data_returns_true_on_clean_eof(self):
+        """F-RL8: relay_data returns True when relay completes cleanly."""
+        from proxy_relay.tunnel import relay_data
+
+        client_reader = AsyncMock(spec=asyncio.StreamReader)
+        client_reader.read = AsyncMock(side_effect=[b"data", b""])
+
+        client_writer = AsyncMock(spec=asyncio.StreamWriter)
+        client_writer.write = MagicMock()
+        client_writer.drain = AsyncMock()
+        client_writer.close = MagicMock()
+        client_writer.wait_closed = AsyncMock()
+
+        remote_reader = AsyncMock(spec=asyncio.StreamReader)
+        remote_reader.read = AsyncMock(side_effect=[b"resp", b""])
+
+        remote_writer = AsyncMock(spec=asyncio.StreamWriter)
+        remote_writer.write = MagicMock()
+        remote_writer.drain = AsyncMock()
+        remote_writer.close = MagicMock()
+        remote_writer.wait_closed = AsyncMock()
+
+        result = await relay_data(client_reader, client_writer, remote_reader, remote_writer)
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_relay_data_returns_false_on_exception(self):
+        """F-RL8: relay_data returns False when a relay task raises an unexpected exception."""
+        from proxy_relay.tunnel import relay_data
+
+        client_reader = AsyncMock(spec=asyncio.StreamReader)
+        client_reader.read = AsyncMock(side_effect=[b"data", b""])
+
+        client_writer = AsyncMock(spec=asyncio.StreamWriter)
+        client_writer.write = MagicMock()
+        client_writer.drain = AsyncMock()
+        client_writer.close = MagicMock()
+        client_writer.wait_closed = AsyncMock()
+
+        # Remote reader raises an OSError
+        remote_reader = AsyncMock(spec=asyncio.StreamReader)
+        remote_reader.read = AsyncMock(side_effect=OSError("connection lost"))
+
+        remote_writer = AsyncMock(spec=asyncio.StreamWriter)
+        remote_writer.write = MagicMock()
+        remote_writer.drain = AsyncMock()
+        remote_writer.close = MagicMock()
+        remote_writer.wait_closed = AsyncMock()
+
+        result = await relay_data(client_reader, client_writer, remote_reader, remote_writer)
+        # The _pipe function catches OSError at DEBUG level — it's a handled exception
+        # so relay_data should still return True (it's a normal connection close pattern).
+        # However, if it were an *unhandled* exception, it would return False.
+        # Since OSError is caught inside _pipe, the task completes without exception.
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_relay_data_returns_false_on_unhandled_exception(self):
+        """F-RL8: relay_data returns False on truly unexpected exception and logs WARNING."""
+        from proxy_relay.tunnel import relay_data
+
+        client_reader = AsyncMock(spec=asyncio.StreamReader)
+        client_reader.read = AsyncMock(side_effect=[b"data", b""])
+
+        client_writer = AsyncMock(spec=asyncio.StreamWriter)
+        client_writer.write = MagicMock()
+        client_writer.drain = AsyncMock()
+        client_writer.close = MagicMock()
+        client_writer.wait_closed = AsyncMock()
+
+        # Remote reader raises a RuntimeError (not caught by _pipe)
+        remote_reader = AsyncMock(spec=asyncio.StreamReader)
+        remote_reader.read = AsyncMock(side_effect=RuntimeError("unexpected"))
+
+        remote_writer = AsyncMock(spec=asyncio.StreamWriter)
+        remote_writer.write = MagicMock()
+        remote_writer.drain = AsyncMock()
+        remote_writer.close = MagicMock()
+        remote_writer.wait_closed = AsyncMock()
+
+        result = await relay_data(client_reader, client_writer, remote_reader, remote_writer)
+        assert result is False

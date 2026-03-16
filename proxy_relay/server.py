@@ -29,6 +29,17 @@ _HEALTH_READ_TIMEOUT: float = 15.0
 _STATUS_DEBOUNCE_SECS: float = 5.0
 
 
+def _mask_url(url: str) -> str:
+    """Replace credentials in a proxy URL with *** for safe logging (F-RL7)."""
+    at_idx = url.find("@")
+    if at_idx == -1:
+        return url
+    scheme_end = url.find("://")
+    if scheme_end == -1:
+        return url
+    return url[: scheme_end + 3] + "***@" + url[at_idx + 1 :]
+
+
 class ProxyServer:
     """Local HTTP CONNECT proxy server.
 
@@ -87,7 +98,7 @@ class ProxyServer:
         self._upstream = await asyncio.to_thread(self._upstream_manager.get_upstream)
         log.info(
             "Upstream resolved: %s (country=%s)",
-            self._upstream.url,
+            _mask_url(self._upstream.url),
             self._upstream.country or "any",
         )
 
@@ -131,9 +142,14 @@ class ProxyServer:
         # Install SIGUSR1 handler for manual rotation
         loop.add_signal_handler(signal.SIGUSR1, self._signal_rotate)
 
+        # Ignore SIGPIPE so broken-pipe writes raise BrokenPipeError instead
+        # of terminating the process (F-RL11).
+        if hasattr(signal, "SIGPIPE"):
+            loop.add_signal_handler(signal.SIGPIPE, lambda: None)
+
         addrs = ", ".join(str(s.getsockname()) for s in self._server.sockets)
         log.info("Proxy server listening on %s", addrs)
-        log.info("Forwarding via upstream SOCKS5 at %s", self._upstream.url)
+        log.info("Forwarding via upstream SOCKS5 at %s", _mask_url(self._upstream.url))
 
     async def serve_forever(self) -> None:
         """Run the server until a shutdown signal is received.
@@ -202,7 +218,7 @@ class ProxyServer:
             self._upstream = new_upstream
             log.info(
                 "Upstream rotated: %s (country=%s)",
-                self._upstream.url,
+                _mask_url(self._upstream.url),
                 self._upstream.country or "any",
             )
             await self._update_status_file_async()
@@ -316,7 +332,7 @@ class ProxyServer:
         # Build a descriptive error with upstream context and actionable hints.
         profile = self._profile_name
         country = self._upstream.country or "any"
-        upstream_url = self._upstream.url
+        upstream_url = _mask_url(self._upstream.url)
 
         hint_parts: list[str] = []
         low = last_error.lower()
