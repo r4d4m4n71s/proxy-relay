@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import threading
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from proxy_relay.logger import get_logger
@@ -97,6 +98,7 @@ class CaptureSession:
         self._collector: Any | None = None
         self._poll_tasks: list[asyncio.Task[None]] = []
         self._thread: threading.Thread | None = None
+        self._session_id: str = ""
 
     @property
     def cdp_port(self) -> int:
@@ -127,6 +129,9 @@ class CaptureSession:
         import sys
 
         from proxy_relay.capture.collector import CaptureCollector
+
+        # F-RL20: generate a unique session ID for this capture run
+        self._session_id = str(uuid.uuid4())
 
         # Lazily import schema only here to keep module-level imports clean
         # (schema.py does a top-level import of telemetry_monitor).
@@ -174,6 +179,19 @@ class CaptureSession:
 
             db_path_resolved = self._config.resolved_db_path()
             db_path_resolved.parent.mkdir(parents=True, exist_ok=True)
+
+            # F-RL21: rotate existing DB before opening a new session
+            if self._config.rotate_db and db_path_resolved.exists():
+                from datetime import UTC, datetime  # noqa: PLC0415
+
+                ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+                rotated = db_path_resolved.parent / f"capture-{ts}.db"
+                db_path_resolved.rename(rotated)
+                log.info("Rotated capture DB to %s", rotated)
+
+                # F-RL23: purge old rotated DBs by age and size
+                self._purge_old_dbs(db_path_resolved.parent)
+
             sqlite_store = SqliteStore(db_path=db_path_resolved, schema=PROXY_RELAY_SCHEMA)
             sqlite_store.connect()
 
@@ -218,6 +236,7 @@ class CaptureSession:
             enqueue_fn=self._writer.enqueue,
             config=self._config,
             profile=self._profile,
+            session_id=self._session_id,
         )
         self._collector = collector
 
@@ -418,6 +437,36 @@ class CaptureSession:
                         except Exception:
                             pass  # Object store may be empty or inaccessible
 
+    def _purge_old_dbs(self, capture_dir: Any) -> None:
+        """Remove rotated capture DBs that exceed age or size limits (F-RL23).
+
+        Scans *capture_dir* for ``capture-*.db`` files and deletes those that
+        are either older than ``config.max_db_age_days`` days or larger than
+        ``config.max_db_size_mb`` MiB.
+
+        Args:
+            capture_dir: Directory (Path) to scan for rotated DB files.
+        """
+        import time as _time
+        from pathlib import Path as _Path
+
+        capture_dir = _Path(capture_dir)
+        max_age_s = self._config.max_db_age_days * 86400
+        max_size_b = self._config.max_db_size_mb * 1024 * 1024
+        now = _time.time()
+
+        for db_file in capture_dir.glob("capture-*.db"):
+            try:
+                stat = db_file.stat()
+                too_old = (now - stat.st_mtime) > max_age_s
+                too_large = stat.st_size > max_size_b
+                if too_old or too_large:
+                    db_file.unlink()
+                    reason = "age" if too_old else "size"
+                    log.info("Purged rotated DB (%s): %s", reason, db_file.name)
+            except OSError:
+                log.debug("Could not purge %s", db_file, exc_info=True)
+
     async def _reconnect_cdp(self) -> None:
         """Reconnect to CDP after an unexpected WebSocket disconnect.
 
@@ -478,8 +527,8 @@ class CaptureSession:
         if self._stop_event is None or self._cdp is None:
             return
 
-        max_reconnects = 50
-        reconnect_delay = 2.0
+        max_reconnects = self._config.max_cdp_reconnects
+        reconnect_delay = self._config.cdp_reconnect_delay_s
 
         for attempt in range(max_reconnects):
             if self._stop_event.is_set():
@@ -517,7 +566,7 @@ class CaptureSession:
                 pass
 
             log.warning(
-                "CDP connection lost (attempt %d/%d), reconnecting in %.0fs...",
+                "CDP connection lost (attempt %d/%d), reconnecting in %.1fs...",
                 attempt + 1, max_reconnects, reconnect_delay,
             )
 
@@ -526,7 +575,7 @@ class CaptureSession:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=reconnect_delay)
                 # stop_event was set during the delay — exit
                 break
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass  # Normal: delay elapsed, proceed with reconnect
 
             if self._stop_event.is_set():
@@ -535,9 +584,15 @@ class CaptureSession:
             try:
                 await self._reconnect_cdp()
                 log.info("CDP reconnected successfully")
+                # Reset backoff delay on success
+                reconnect_delay = self._config.cdp_reconnect_delay_s
             except Exception:
                 log.warning("CDP reconnect failed", exc_info=True)
-                # Keep trying until max_reconnects or stop_event
+                # Apply exponential backoff, capped at max
+                reconnect_delay = min(
+                    reconnect_delay * self._config.cdp_reconnect_backoff_factor,
+                    self._config.cdp_reconnect_max_delay_s,
+                )
                 continue
         else:
             log.error("CDP reconnect limit reached (%d), stopping capture", max_reconnects)

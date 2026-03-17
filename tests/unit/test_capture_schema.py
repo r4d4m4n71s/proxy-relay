@@ -124,3 +124,34 @@ class TestSchemaColumns:
         required = {"url", "frame_id", "transition_type", "mime_type", "profile"}
         missing = required - cols
         assert not missing, f"page_navigations missing columns: {missing}"
+
+
+class TestSchemaSessionIdColumn:
+    """Verify session_id column is present in all 6 tables (F-RL20)."""
+
+    @pytest.fixture(autouse=True)
+    def tables(self):
+        from proxy_relay.capture.schema import PROXY_RELAY_SCHEMA
+
+        self._tables = {t.name: t for t in PROXY_RELAY_SCHEMA.tables}
+
+    def _column_names(self, table_name: str) -> set[str]:
+        return {col.name for col in self._tables[table_name].columns}
+
+    def test_http_requests_has_session_id(self):
+        assert "session_id" in self._column_names("http_requests")
+
+    def test_http_responses_has_session_id(self):
+        assert "session_id" in self._column_names("http_responses")
+
+    def test_cookies_has_session_id(self):
+        assert "session_id" in self._column_names("cookies")
+
+    def test_storage_snapshots_has_session_id(self):
+        assert "session_id" in self._column_names("storage_snapshots")
+
+    def test_websocket_frames_has_session_id(self):
+        assert "session_id" in self._column_names("websocket_frames")
+
+    def test_page_navigations_has_session_id(self):
+        assert "session_id" in self._column_names("page_navigations")

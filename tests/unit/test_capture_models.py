@@ -292,3 +292,100 @@ class TestShouldCaptureBody:
 
         assert should_capture_body("Image/PNG") is False
         assert should_capture_body("APPLICATION/JSON") is True
+
+
+# ---------------------------------------------------------------------------
+# F-RL18 / F-RL21 / F-RL23 new CaptureConfig fields
+# ---------------------------------------------------------------------------
+
+
+class TestCaptureConfigReconnectDefaults:
+    """Verify CDP reconnect backoff defaults (F-RL18)."""
+
+    def test_default_max_cdp_reconnects(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig()
+        assert cfg.max_cdp_reconnects == 50
+
+    def test_default_cdp_reconnect_delay_s(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig()
+        assert cfg.cdp_reconnect_delay_s == pytest.approx(2.0)
+
+    def test_default_cdp_reconnect_backoff_factor(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig()
+        assert cfg.cdp_reconnect_backoff_factor == pytest.approx(1.5)
+
+    def test_default_cdp_reconnect_max_delay_s(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig()
+        assert cfg.cdp_reconnect_max_delay_s == pytest.approx(60.0)
+
+    def test_custom_max_cdp_reconnects(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig(max_cdp_reconnects=10)
+        assert cfg.max_cdp_reconnects == 10
+
+    def test_custom_cdp_reconnect_delay_s(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig(cdp_reconnect_delay_s=5.0)
+        assert cfg.cdp_reconnect_delay_s == pytest.approx(5.0)
+
+    def test_custom_backoff_factor(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig(cdp_reconnect_backoff_factor=2.0)
+        assert cfg.cdp_reconnect_backoff_factor == pytest.approx(2.0)
+
+    def test_custom_max_delay(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig(cdp_reconnect_max_delay_s=120.0)
+        assert cfg.cdp_reconnect_max_delay_s == pytest.approx(120.0)
+
+
+class TestCaptureConfigRotationDefaults:
+    """Verify DB rotation and purge defaults (F-RL21 / F-RL23)."""
+
+    def test_default_rotate_db_is_true(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig()
+        assert cfg.rotate_db is True
+
+    def test_default_max_db_size_mb(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig()
+        assert cfg.max_db_size_mb == 500
+
+    def test_default_max_db_age_days(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig()
+        assert cfg.max_db_age_days == 30
+
+    def test_can_disable_rotate_db(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig(rotate_db=False)
+        assert cfg.rotate_db is False
+
+    def test_custom_max_db_size_mb(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig(max_db_size_mb=100)
+        assert cfg.max_db_size_mb == 100
+
+    def test_custom_max_db_age_days(self):
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig(max_db_age_days=7)
+        assert cfg.max_db_age_days == 7
