@@ -193,8 +193,9 @@ def _parse_config(data: dict) -> RelayConfig:
     server_data = data.get("server", {})
     host = str(server_data.get("host", "127.0.0.1"))
     port = server_data.get("port", 8080)
-    if not isinstance(port, int) or port < 1 or port > 65535:
-        raise ConfigError(f"server.port must be an integer 1-65535, got: {port!r}")
+    # Port 0 is valid: the OS assigns an ephemeral port (used by browse auto-start).
+    if not isinstance(port, int) or port < 0 or port > 65535:
+        raise ConfigError(f"server.port must be an integer 0-65535, got: {port!r}")
     if host not in ("127.0.0.1", "::1", "localhost"):
         log.warning(
             "server.host=%r binds to a non-loopback address — "

@@ -199,11 +199,15 @@ class ProxyServer:
         """Signal handler that triggers graceful shutdown."""
         log.info("Shutdown signal received, stopping server...")
         task = asyncio.get_running_loop().create_task(self.stop())
-        task.add_done_callback(
-            lambda t: log.error("stop() raised an exception: %s", t.exception())
-            if not t.cancelled() and t.exception() is not None
-            else None
-        )
+
+        def _on_stop_done(t: asyncio.Task) -> None:  # type: ignore[type-arg]
+            # G-RL9: always set shutdown_event so serve_forever() can unblock
+            # even when stop() raises an exception or is cancelled.
+            if not t.cancelled() and t.exception() is not None:
+                log.error("stop() raised an exception: %s", t.exception())
+            self._shutdown_event.set()
+
+        task.add_done_callback(_on_stop_done)
 
     def _signal_rotate(self) -> None:
         """Signal handler (SIGUSR1) that triggers upstream rotation."""

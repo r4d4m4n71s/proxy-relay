@@ -223,8 +223,8 @@ def open_browser(
         proxy_host=proxy_host,
         proxy_port=proxy_port,
         timezone=timezone,
+        start_url=url,
     )
-    cmd.append(url)
 
     if timezone:
         log.info("Setting browser timezone: TZ=%s", timezone)

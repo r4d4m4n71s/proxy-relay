@@ -214,6 +214,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="URL",
         help="URL to open on browser launch (default: browser new-tab page).",
     )
+    browse_parser.add_argument(
+        "--log-level",
+        type=str,
+        default=None,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Log level override (default: from config or INFO).",
+    )
 
     # ── analyze ────────────────────────────────────────────────────────
     analyze_parser = subparsers.add_parser(
@@ -598,7 +605,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
         return 1
 
     profile_name = args.profile or config.proxy_st_profile
-    log_level = config.log_level
+    log_level = getattr(args, "log_level", None) or config.log_level
     configure_logging(log_level)
 
     # Validate --rotate-min before doing any work (E-RL15).

@@ -27,9 +27,13 @@ def _build_schema() -> SchemaDefinition:
                 columns=[
                     ColumnDef("request_id"),
                     ColumnDef("url"),
+                    ColumnDef("domain"),
+                    ColumnDef("path"),
                     ColumnDef("method"),
                     ColumnDef("headers"),
                     ColumnDef("post_data"),
+                    ColumnDef("initiator"),
+                    ColumnDef("initiator_type"),
                     ColumnDef("profile"),
                     ColumnDef("session_id"),
                 ],

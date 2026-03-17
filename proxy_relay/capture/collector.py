@@ -91,7 +91,14 @@ class CaptureCollector:
             return
 
         request_id: str = params.get("requestId", "")
-        self._request_times[request_id] = time.monotonic()
+        now = time.monotonic()
+        self._request_times[request_id] = now
+
+        # Prune stale entries: requests that never received a response within 5 minutes.
+        # Prevents unbounded dict growth in long-running sessions (G-RL4).
+        stale = [k for k, v in self._request_times.items() if now - v > 300]
+        for k in stale:
+            del self._request_times[k]
 
         parsed = urlparse(url)
         domain = parsed.hostname or ""
@@ -160,7 +167,6 @@ class CaptureCollector:
             "mime_type": response.get("mimeType", ""),
             "headers": _headers_to_str(headers),
             "body": body_truncated,
-            "body_preview": body_truncated,
             "response_ms": response_ms,
             "profile": self._profile,
             "session_id": self._session_id,
@@ -228,7 +234,7 @@ class CaptureCollector:
                     "storage_type": storage_type,
                     "key": key,
                     "value": _truncate(value, self._config.max_body_bytes),
-                    "event_type": "changed",
+                    "change_type": "changed",
                     "profile": self._profile,
                     "session_id": self._session_id,
                 }
@@ -242,7 +248,7 @@ class CaptureCollector:
                     "storage_type": storage_type,
                     "key": key,
                     "value": "",
-                    "event_type": "removed",
+                    "change_type": "removed",
                     "profile": self._profile,
                     "session_id": self._session_id,
                 }
@@ -268,7 +274,6 @@ class CaptureCollector:
             "url": params.get("url", ""),
             "direction": direction,
             "payload": _truncate(payload_data, self._config.max_body_bytes),
-            "payload_preview": _truncate(payload_data, self._config.max_body_bytes),
             "opcode": frame.get("opcode", 0),
             "profile": self._profile,
             "session_id": self._session_id,

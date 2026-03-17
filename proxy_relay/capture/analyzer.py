@@ -562,6 +562,8 @@ def _analyze_auth_flow(
     session_filter: _SessionFilter = ("", ()),
 ) -> list[AuthEvent]:
     """Find auth-related requests and reconstruct token lifecycle."""
+    # G-RL11: _AUTH_URL_PATTERNS is a module-level constant (not user input),
+    # so f-string interpolation here is safe from SQL injection.
     conditions = " OR ".join(f"lower(r.url) LIKE '{p}'" for p in _AUTH_URL_PATTERNS)
     qf_frag, qf_params = _qualify_filter(session_filter, "r")
     extra = f" {qf_frag}" if qf_frag else ""
@@ -742,13 +744,17 @@ def _analyze_behavior(
         result["requests_per_second_avg"] = round(len(timestamps) / duration, 2)
         result["requests_per_minute_avg"] = round(len(timestamps) / duration * 60, 1)
 
-    # Peak requests per minute (sliding 60s window)
+    # Peak requests per minute — O(n) two-pointer sliding window (G-RL7).
+    # timestamps is already sorted (ORDER BY timestamp in the query).
     if duration > 0:
         peak_rpm = 0
-        for i, ts in enumerate(timestamps):
-            window_end = ts.timestamp() + 60
-            count = sum(1 for t in timestamps[i:] if t.timestamp() <= window_end)
-            peak_rpm = max(peak_rpm, count)
+        left = 0
+        for right, ts in enumerate(timestamps):
+            window_start = ts.timestamp() - 60
+            # Advance left pointer past entries that fall outside the 60s window
+            while timestamps[left].timestamp() < window_start:
+                left += 1
+            peak_rpm = max(peak_rpm, right - left + 1)
         result["requests_per_minute_peak"] = peak_rpm
 
     return result

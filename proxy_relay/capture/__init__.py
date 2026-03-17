@@ -37,6 +37,11 @@ BackgroundWriter: Any = None
 def _find_free_port() -> int:
     """Bind to port 0 and return the OS-assigned free port number.
 
+    Note: There is a known TOCTOU race between releasing the socket here and
+    Chromium binding to the returned port.  This window is negligibly small on
+    loopback and the worst-case outcome is a port-in-use error that surfaces
+    clearly in the log (G-RL13).
+
     Returns:
         An available TCP port number on 127.0.0.1.
     """
@@ -199,6 +204,13 @@ class CaptureSession:
             # SqliteStore.connect() was called in this (capture) thread.
             # Re-open the connection with check_same_thread=False so the
             # writer thread can use it without raising ProgrammingError.
+            #
+            # G-RL5: This accesses SqliteStore._conn directly because
+            # telemetry-monitor's SqliteStore (an external package) does not
+            # expose a public API to reopen its connection with
+            # check_same_thread=False.  The coupling is intentional and
+            # accepted: SqliteStore._conn is the only way to perform this
+            # necessary cross-thread reconnect without forking telemetry-monitor.
             if sqlite_store._conn is not None:
                 sqlite_store._conn.close()
                 sqlite_store._conn = _sqlite3.connect(
@@ -651,6 +663,8 @@ class CaptureSession:
             self._writer = None
 
         # Log capture summary for diagnostics
+        # G-RL14: resolve db_path once and reuse — resolved_db_path() creates
+        # the parent directory on each call, so a single resolution is preferable.
         db_path = self._config.resolved_db_path()
         if db_path.exists():
             try:
@@ -672,7 +686,7 @@ class CaptureSession:
             try:
                 from proxy_relay.capture.analyzer import analyze as _analyze
 
-                _report = _analyze(self._config.resolved_db_path())
+                _report = _analyze(db_path)
 
                 if self._config.auto_analyze:
                     from proxy_relay.capture.analyzer import print_report as _print_analysis
@@ -689,8 +703,7 @@ class CaptureSession:
             except Exception:
                 log.debug("Post-capture analysis skipped", exc_info=True)
 
-        # Secure the database file
-        db_path = self._config.resolved_db_path()
+        # Secure the database file (reuse db_path resolved above)
         if db_path.exists():
             try:
                 _os.chmod(db_path, 0o600)

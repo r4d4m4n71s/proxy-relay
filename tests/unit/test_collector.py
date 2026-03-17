@@ -518,8 +518,8 @@ class TestOnStorage:
         assert len(enqueue_fn.calls) == 1
         _, payload = enqueue_fn.calls[0]
         assert payload.get("key") == "old_key"
-        event_type_str = str(payload.get("event_type", ""))
-        assert "removed" in event_type_str.lower() or "changed" in event_type_str.lower()
+        change_type_str = str(payload.get("change_type", ""))
+        assert "removed" in change_type_str.lower() or "changed" in change_type_str.lower()
 
     def test_on_storage_separate_origins_tracked_independently(self, default_collector, enqueue_fn):
         """Storage from different origins does not interfere."""

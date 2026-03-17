@@ -44,6 +44,9 @@ class CdpClient:
         self._subscribers: dict[str, list[Callable[..., Any]]] = {}
         self._recv_task: asyncio.Task[None] | None = None
         self._closed: bool = False
+        # G-RL10: track async subscriber tasks to prevent fire-and-forget silencing
+        # exceptions and to allow cancellation on close.
+        self._pending_tasks: set[asyncio.Task[None]] = set()
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -279,9 +282,23 @@ class CdpClient:
                     for cb in callbacks:
                         try:
                             result = cb(params)
-                            # Support async callbacks
+                            # Support async callbacks — track tasks to avoid
+                            # fire-and-forget that silently swallows exceptions
+                            # (G-RL10).
                             if asyncio.iscoroutine(result):
-                                asyncio.create_task(result)
+                                task: asyncio.Task[None] = asyncio.create_task(result)
+                                self._pending_tasks.add(task)
+
+                                def _task_done(t: asyncio.Task[None]) -> None:
+                                    self._pending_tasks.discard(t)
+                                    if not t.cancelled() and t.exception() is not None:
+                                        log.debug(
+                                            "Error in async CDP subscriber for %r: %s",
+                                            method,
+                                            t.exception(),
+                                        )
+
+                                task.add_done_callback(_task_done)
                         except Exception:
                             log.debug("Error in CDP subscriber for %r", method, exc_info=True)
 
@@ -310,6 +327,12 @@ class CdpClient:
             except (TimeoutError, asyncio.CancelledError):
                 pass
             self._recv_task = None
+
+        # Cancel tracked async subscriber tasks (G-RL10)
+        for task in list(self._pending_tasks):
+            if not task.done():
+                task.cancel()
+        self._pending_tasks.clear()
 
         if self._ws is not None:
             try:
