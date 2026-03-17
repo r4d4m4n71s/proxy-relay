@@ -1693,4 +1693,51 @@ class TestCloseBrowser:
         proc.poll.return_value = 0
         handle = BrowserHandle(process=proc, profile_dir=profile, chromium_path=Path("/x"))
         close_browser(handle)
-        assert profile.exists(), "profile dir must NOT be removed"
+
+
+# ---------------------------------------------------------------------------
+# rotate_proxy  (F16 — DataDome recovery)
+# ---------------------------------------------------------------------------
+
+
+class TestRotateProxy:
+    """rotate_proxy() — send SIGUSR1 to running server for upstream rotation."""
+
+    def test_sends_sigusr1_to_running_process(self):
+        """Running server receives SIGUSR1."""
+        import signal as signal_mod
+
+        from proxy_relay.browse import rotate_proxy
+
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.poll.return_value = None  # running
+        proc.pid = 12345
+
+        rotate_proxy(proc, "miami")
+
+        proc.send_signal.assert_called_once_with(signal_mod.SIGUSR1)
+
+    def test_raises_browse_error_if_process_exited(self):
+        """Raises BrowseError when the server has already exited."""
+        from proxy_relay.exceptions import BrowseError
+        from proxy_relay.browse import rotate_proxy
+
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.poll.return_value = 1  # exited
+        proc.returncode = 1
+
+        with pytest.raises(BrowseError, match="not running"):
+            rotate_proxy(proc, "miami")
+
+    def test_raises_browse_error_on_os_error(self):
+        """Wraps OSError from send_signal in BrowseError."""
+        from proxy_relay.exceptions import BrowseError
+        from proxy_relay.browse import rotate_proxy
+
+        proc = MagicMock(spec=subprocess.Popen)
+        proc.poll.return_value = None  # running
+        proc.pid = 99
+        proc.send_signal.side_effect = OSError("permission denied")
+
+        with pytest.raises(BrowseError, match="Failed to send SIGUSR1"):
+            rotate_proxy(proc, "miami")

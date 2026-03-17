@@ -749,6 +749,43 @@ def auto_stop_server(
             log.error("Server did not respond to SIGKILL within 5s")
 
 
+def rotate_proxy(
+    server_proc: subprocess.Popen[bytes],
+    profile_name: str,
+) -> None:
+    """Send SIGUSR1 to a running relay server to rotate the upstream proxy.
+
+    The relay server handles the SIGUSR1 by cycling its upstream connection
+    to a new proxy-st entry, which typically results in a new exit IP on the
+    next outbound request.  Useful before re-launching a browser session when
+    the previous IP was blocked (e.g. by DataDome).
+
+    Args:
+        server_proc: The running server subprocess handle (from
+            :func:`auto_start_server`).
+        profile_name: proxy-st profile name (for log messages).
+
+    Raises:
+        BrowseError: If the server process has already exited.
+    """
+    if server_proc.poll() is not None:
+        raise BrowseError(
+            f"Cannot rotate proxy — server for profile {profile_name!r} is not running "
+            f"(exit code {server_proc.returncode})"
+        )
+    try:
+        server_proc.send_signal(signal.SIGUSR1)
+        log.info(
+            "Sent SIGUSR1 to server for profile %r (PID %d) — upstream rotation requested",
+            profile_name,
+            server_proc.pid,
+        )
+    except OSError as exc:
+        raise BrowseError(
+            f"Failed to send SIGUSR1 to server for profile {profile_name!r}: {exc}"
+        ) from exc
+
+
 class BrowseSupervisor:
     """Supervise a Chromium process running through the proxy relay.
 
