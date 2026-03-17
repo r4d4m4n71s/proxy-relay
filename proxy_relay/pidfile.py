@@ -18,6 +18,7 @@ import os
 import signal
 import tempfile
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,9 @@ _DEFAULT_PROFILE: str = "browse"
 # thread-pool thread via asyncio.to_thread() (F-RL6).
 _atexit_lock = threading.Lock()
 _atexit_registered: set[Path] = set()
+
+# F-RL25: Track status file paths registered for atexit cleanup.
+_status_atexit_registered: set[Path] = set()
 
 
 def _validate_profile_name(profile: str) -> None:
@@ -197,6 +201,15 @@ def send_signal(pid: int, sig: signal.Signals) -> bool:
 # ------------------------------------------------------------------
 
 
+def _remove_status_file(path: Path) -> None:
+    """Remove a status file if it exists (F-RL25 atexit handler)."""
+    try:
+        path.unlink(missing_ok=True)
+        log.debug("Status file removed (atexit): %s", path)
+    except OSError as exc:
+        log.warning("Could not remove status file %s: %s", path, exc)
+
+
 def write_status(
     *,
     host: str,
@@ -206,6 +219,8 @@ def write_status(
     active_connections: int,
     total_connections: int,
     profile: str = "",
+    pid: int | None = None,
+    started_at: str | None = None,
     stats: dict[str, Any] | None = None,
     path: Path = STATUS_PATH,
 ) -> None:
@@ -222,6 +237,8 @@ def write_status(
         active_connections: Current active connection count.
         total_connections: Lifetime connection count.
         profile: proxy-st profile name the server is using.
+        pid: Server process ID (default: current process).
+        started_at: ISO timestamp of when the server started.
         stats: Optional monitor stats dict to include.
         path: Destination path for the status file.
     """
@@ -231,6 +248,9 @@ def write_status(
         "upstream_url": upstream_url,
         "country": country,
         "profile": profile,
+        "pid": pid if pid is not None else os.getpid(),
+        "started_at": started_at or "",
+        "last_updated": datetime.now(timezone.utc).isoformat(),
         "active_connections": active_connections,
         "total_connections": total_connections,
     }
@@ -258,6 +278,13 @@ def write_status(
     except Exception as exc:
         log.warning("Could not write status file %s: %s", path, exc)
         return
+
+    # F-RL25: Register atexit cleanup so status file is removed even on crash.
+    with _atexit_lock:
+        if path not in _status_atexit_registered:
+            atexit.register(_remove_status_file, path)
+            _status_atexit_registered.add(path)
+
     log.debug("Status written to %s", path)
 
 
@@ -327,3 +354,73 @@ def read_status_if_alive(profile: str) -> tuple[bool, int | None, dict[str, Any]
         return False, pid, None
 
     return True, pid, read_status(status_p)
+
+
+# ------------------------------------------------------------------
+# F-RL26: Multi-profile status scanning
+# ------------------------------------------------------------------
+
+
+def scan_all_status(config_dir: Path = CONFIG_DIR) -> list[dict[str, Any]]:
+    """Scan all status files and return info for live profiles.
+
+    Globs ``config_dir/*.status.json``, extracts the profile name from
+    each filename, checks PID liveness, and removes stale files.
+
+    Args:
+        config_dir: Directory to scan (default: ``CONFIG_DIR``).
+
+    Returns:
+        List of dicts, each containing ``profile``, ``running``,
+        ``pid``, and any status data for live profiles.
+    """
+    results: list[dict[str, Any]] = []
+    for status_file in sorted(config_dir.glob("*.status.json")):
+        profile = status_file.name.removesuffix(".status.json")
+        if not profile:
+            continue
+
+        running, pid, data = read_status_if_alive(profile)
+        entry: dict[str, Any] = {}
+        if data is not None:
+            entry.update(data)
+        # Override with authoritative values (filename-derived profile, liveness)
+        entry["profile"] = profile
+        entry["running"] = running
+        entry["pid"] = pid
+        results.append(entry)
+
+    return results
+
+
+# ------------------------------------------------------------------
+# F-RL27: Simplified live status helper
+# ------------------------------------------------------------------
+
+
+def read_live_status(profile: str) -> dict[str, Any] | None:
+    """Return combined status + liveness for a profile, or None.
+
+    A thin wrapper over :func:`read_status_if_alive` that returns a
+    single dict augmented with ``running`` and ``pid`` keys when the
+    process is alive, or ``None`` when it is not running.
+
+    Args:
+        profile: proxy-st profile name.
+
+    Returns:
+        Status dict with ``running=True`` and ``pid`` added, or
+        ``None`` if the profile is not running.
+    """
+    running, pid, data = read_status_if_alive(profile)
+    if not running:
+        return None
+
+    result: dict[str, Any] = {}
+    if data is not None:
+        result.update(data)
+    # Override with authoritative values
+    result["profile"] = profile
+    result["running"] = True
+    result["pid"] = pid
+    return result

@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import os
 import signal
 import time
 from collections.abc import Callable
 from dataclasses import asdict
+from datetime import datetime, timezone
 
 from proxy_relay.config import MonitorConfig
 from proxy_relay.handler import handle_connection
@@ -77,6 +79,7 @@ class ProxyServer:
         self._total_connections: int = 0
         self._shutdown_event: asyncio.Event = asyncio.Event()
         self._last_status_write: float = 0.0
+        self._started_at: str = ""
 
     async def start(self) -> None:
         """Start the proxy server.
@@ -116,6 +119,9 @@ class ProxyServer:
                 self._monitor_config.error_threshold_count,
                 self._monitor_config.slow_threshold_ms,
             )
+
+        # Record start time (F-RL24)
+        self._started_at = datetime.now(timezone.utc).isoformat()
 
         # Start the TCP server
         self._server = await asyncio.start_server(
@@ -372,6 +378,8 @@ class ProxyServer:
         country: str | None,
         active_connections: int,
         total_connections: int,
+        pid: int,
+        started_at: str,
     ) -> None:
         """Write current server status to the status JSON file.
 
@@ -385,6 +393,8 @@ class ProxyServer:
             upstream_url=upstream_url,
             country=country,
             profile=profile,
+            pid=pid,
+            started_at=started_at,
             active_connections=active_connections,
             total_connections=total_connections,
             stats=stats_dict,
@@ -410,6 +420,8 @@ class ProxyServer:
         country = self._upstream.country
         active_connections = self._active_connections
         total_connections = self._total_connections
+        pid = os.getpid()
+        started_at = self._started_at
 
         await asyncio.to_thread(
             self._update_status_file,
@@ -419,6 +431,8 @@ class ProxyServer:
             country,
             active_connections,
             total_connections,
+            pid,
+            started_at,
         )
 
     @property
