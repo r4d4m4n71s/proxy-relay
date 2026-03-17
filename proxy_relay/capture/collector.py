@@ -32,10 +32,12 @@ class CaptureCollector:
         enqueue_fn: Callable[[str, dict[str, Any]], None],
         config: CaptureConfig,
         profile: str = "",
+        session_id: str = "",
     ) -> None:
         self._enqueue = enqueue_fn
         self._config = config
         self._profile = profile
+        self._session_id = session_id
         # "domain|name" -> hashed/raw value for cookie diffing
         self._prev_cookies: dict[str, str] = {}
         # "origin|type" -> {key: value}
@@ -112,6 +114,7 @@ class CaptureCollector:
             "initiator": initiator_type,
             "initiator_type": initiator_type,
             "profile": self._profile,
+            "session_id": self._session_id,
         }
         self._enqueue("http.request.captured", payload)
 
@@ -159,6 +162,7 @@ class CaptureCollector:
             "body_preview": body_truncated,
             "response_ms": response_ms,
             "profile": self._profile,
+            "session_id": self._session_id,
         }
         self._enqueue("http.response.captured", payload)
 
@@ -196,6 +200,7 @@ class CaptureCollector:
                     "expires": cookie.get("expires", 0),
                     "path": cookie.get("path", "/"),
                     "profile": self._profile,
+                    "session_id": self._session_id,
                 }
                 self._enqueue("cookie.snapshot", payload)
 
@@ -224,6 +229,7 @@ class CaptureCollector:
                     "value": _truncate(value, self._config.max_body_bytes),
                     "event_type": "changed",
                     "profile": self._profile,
+                    "session_id": self._session_id,
                 }
                 self._enqueue("storage.changed", payload)
 
@@ -237,6 +243,7 @@ class CaptureCollector:
                     "value": "",
                     "event_type": "removed",
                     "profile": self._profile,
+                    "session_id": self._session_id,
                 }
                 self._enqueue("storage.removed", payload)
 
@@ -263,6 +270,7 @@ class CaptureCollector:
             "payload_preview": _truncate(payload_data, self._config.max_body_bytes),
             "opcode": frame.get("opcode", 0),
             "profile": self._profile,
+            "session_id": self._session_id,
         }
         self._enqueue("ws.frame", payload)
 
@@ -287,6 +295,7 @@ class CaptureCollector:
             "transition_type": params.get("type", frame.get("transitionType", "")),
             "mime_type": frame.get("mimeType", ""),
             "profile": self._profile,
+            "session_id": self._session_id,
         }
         self._enqueue("page.navigated", payload)
 

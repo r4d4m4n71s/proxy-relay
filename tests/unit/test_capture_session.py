@@ -448,3 +448,221 @@ class TestCaptureSession:
         reports = list(report_dir.glob("capture-report-*.md"))
         assert len(reports) == 1
         assert "Capture Analysis Report" in reports[0].read_text()
+
+
+# ---------------------------------------------------------------------------
+# F-RL20 — session_id UUID generation
+# ---------------------------------------------------------------------------
+
+
+class TestCaptureSessionId:
+    """Verify start() generates a UUID session_id and wires it to collector."""
+
+    async def test_start_generates_session_id(self, tmp_path):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        mock_cdp = AsyncMock()
+        mock_cdp._recv_task = None
+        mock_writer = MagicMock()
+
+        session = CaptureSession(config=CaptureConfig(db_path=tmp_path / "capture.db"))
+
+        with patch("proxy_relay.capture.CdpClient", return_value=mock_cdp), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer):
+            await session.start(9222)
+
+        assert session._session_id != "", "session_id must be non-empty after start()"
+
+    async def test_start_session_id_is_valid_uuid(self, tmp_path):
+        import uuid as _uuid
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        mock_cdp = AsyncMock()
+        mock_cdp._recv_task = None
+        mock_writer = MagicMock()
+
+        session = CaptureSession(config=CaptureConfig(db_path=tmp_path / "capture.db"))
+
+        with patch("proxy_relay.capture.CdpClient", return_value=mock_cdp), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer):
+            await session.start(9222)
+
+        # Must not raise — a valid UUID string parses cleanly
+        parsed = _uuid.UUID(session._session_id)
+        assert parsed.version == 4
+
+    async def test_start_session_id_unique_across_instances(self, tmp_path):
+        """Two separate CaptureSession.start() calls produce different session_ids."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        def make_session(db_name: str) -> CaptureSession:
+            mock_cdp = AsyncMock()
+            mock_cdp._recv_task = None
+            mock_writer = MagicMock()
+            return CaptureSession(
+                config=CaptureConfig(db_path=tmp_path / db_name)
+            ), mock_cdp, mock_writer
+
+        s1, cdp1, w1 = make_session("capture1.db")
+        s2, cdp2, w2 = make_session("capture2.db")
+
+        with patch("proxy_relay.capture.CdpClient", return_value=cdp1), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=w1):
+            await s1.start(9222)
+
+        with patch("proxy_relay.capture.CdpClient", return_value=cdp2), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=w2):
+            await s2.start(9223)
+
+        assert s1._session_id != s2._session_id
+
+
+# ---------------------------------------------------------------------------
+# F-RL21 — DB rotation
+# ---------------------------------------------------------------------------
+
+
+class TestCaptureSessionDbRotation:
+    """Verify that start() rotates an existing capture.db (F-RL21)."""
+
+    async def test_existing_db_is_renamed_on_start(self, tmp_path):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        db_path = tmp_path / "capture.db"
+        db_path.write_text("old data")  # simulate pre-existing DB
+
+        mock_cdp = AsyncMock()
+        mock_cdp._recv_task = None
+        mock_writer = MagicMock()
+
+        session = CaptureSession(config=CaptureConfig(db_path=db_path, rotate_db=True))
+
+        with patch("proxy_relay.capture.CdpClient", return_value=mock_cdp), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer):
+            await session.start(9222)
+
+        # Original path must no longer be the "old data" file
+        rotated = list(tmp_path.glob("capture-*.db"))
+        assert len(rotated) == 1, "Exactly one rotated DB file expected"
+        assert rotated[0].read_text() == "old data"
+
+    async def test_no_db_present_does_not_raise(self, tmp_path):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        db_path = tmp_path / "capture.db"
+        # db_path does NOT exist — rotation should be silently skipped
+
+        mock_cdp = AsyncMock()
+        mock_cdp._recv_task = None
+        mock_writer = MagicMock()
+
+        session = CaptureSession(config=CaptureConfig(db_path=db_path, rotate_db=True))
+
+        with patch("proxy_relay.capture.CdpClient", return_value=mock_cdp), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer):
+            await session.start(9222)  # Must not raise
+
+    async def test_rotate_db_false_leaves_existing_db(self, tmp_path):
+        import sqlite3
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        db_path = tmp_path / "capture.db"
+        # Create a real (but empty) SQLite file so SqliteStore.connect() doesn't fail
+        conn = sqlite3.connect(str(db_path))
+        conn.close()
+
+        mock_cdp = AsyncMock()
+        mock_cdp._recv_task = None
+        mock_writer = MagicMock()
+
+        session = CaptureSession(config=CaptureConfig(db_path=db_path, rotate_db=False))
+
+        with patch("proxy_relay.capture.CdpClient", return_value=mock_cdp), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer):
+            await session.start(9222)
+
+        rotated = list(tmp_path.glob("capture-*.db"))
+        assert len(rotated) == 0, "rotate_db=False must not create any rotated files"
+
+
+# ---------------------------------------------------------------------------
+# F-RL23 — old DB purge
+# ---------------------------------------------------------------------------
+
+
+class TestPurgeOldDbs:
+    """Verify _purge_old_dbs deletes files by age and size (F-RL23)."""
+
+    def _make_session(self, tmp_path, **cfg_kwargs):
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig(db_path=tmp_path / "capture.db", **cfg_kwargs)
+        return CaptureSession(config=cfg)
+
+    def test_purges_file_older_than_max_age(self, tmp_path):
+        import time
+
+        session = self._make_session(tmp_path, max_db_age_days=1, max_db_size_mb=999)
+
+        old_db = tmp_path / "capture-20240101T000000.db"
+        old_db.write_text("old")
+        # Make it appear very old
+        old_mtime = time.time() - (2 * 86400)  # 2 days ago
+        import os
+        os.utime(old_db, (old_mtime, old_mtime))
+
+        session._purge_old_dbs(tmp_path)
+        assert not old_db.exists(), "File older than max_db_age_days must be deleted"
+
+    def test_does_not_purge_recent_file(self, tmp_path):
+        session = self._make_session(tmp_path, max_db_age_days=30, max_db_size_mb=999)
+
+        recent_db = tmp_path / "capture-20991231T000000.db"
+        recent_db.write_text("recent")
+
+        session._purge_old_dbs(tmp_path)
+        assert recent_db.exists(), "Recently modified file must not be deleted"
+
+    def test_purges_file_exceeding_size_limit(self, tmp_path):
+        session = self._make_session(tmp_path, max_db_age_days=999, max_db_size_mb=0)
+
+        big_db = tmp_path / "capture-20991231T120000.db"
+        big_db.write_bytes(b"x" * 100)  # any non-zero file > 0 MB cap
+
+        session._purge_old_dbs(tmp_path)
+        assert not big_db.exists(), "File exceeding max_db_size_mb must be deleted"
+
+    def test_only_matches_rotated_db_pattern(self, tmp_path):
+        """Files not matching capture-*.db pattern must be left alone."""
+        session = self._make_session(tmp_path, max_db_age_days=0, max_db_size_mb=0)
+
+        other = tmp_path / "other.db"
+        other.write_text("not a rotated db")
+
+        session._purge_old_dbs(tmp_path)
+        assert other.exists(), "Non-matching files must not be deleted"
+
+    def test_missing_directory_does_not_raise(self, tmp_path):
+        """Calling _purge_old_dbs on a non-existent dir must not raise."""
+        session = self._make_session(tmp_path, max_db_age_days=1, max_db_size_mb=1)
+        non_existent = tmp_path / "no-such-dir"
+        session._purge_old_dbs(non_existent)  # Must not raise

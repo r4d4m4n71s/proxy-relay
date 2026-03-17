@@ -629,3 +629,110 @@ class TestOnNavigation:
         default_collector.on_navigation(params)
         _, payload = enqueue_fn.calls[0]
         assert "profile" in payload
+
+
+# ---------------------------------------------------------------------------
+# F-RL20 — session_id propagation
+# ---------------------------------------------------------------------------
+
+
+class TestCollectorSessionId:
+    """Verify session_id is threaded through all on_* event payloads (F-RL20)."""
+
+    @pytest.fixture
+    def enqueue_fn(self):
+        calls: list[tuple[str, dict]] = []
+
+        def _enqueue(event_type: str, payload: dict) -> None:
+            calls.append((event_type, payload))
+
+        _enqueue.calls = calls  # type: ignore[attr-defined]
+        return _enqueue
+
+    @pytest.fixture
+    def collector_with_session(self, enqueue_fn):
+        from proxy_relay.capture.collector import CaptureCollector
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig(domains=frozenset({"tidal.com", "qobuz.com"}))
+        return CaptureCollector(
+            enqueue_fn=enqueue_fn,
+            config=cfg,
+            session_id="test-session-uuid",
+        )
+
+    def test_session_id_stored_on_init(self):
+        from proxy_relay.capture.collector import CaptureCollector
+        from proxy_relay.capture.models import CaptureConfig
+
+        collector = CaptureCollector(
+            enqueue_fn=lambda *a: None,
+            config=CaptureConfig(),
+            session_id="my-session-id",
+        )
+        assert collector._session_id == "my-session-id"
+
+    def test_default_session_id_is_empty_string(self):
+        from proxy_relay.capture.collector import CaptureCollector
+        from proxy_relay.capture.models import CaptureConfig
+
+        collector = CaptureCollector(
+            enqueue_fn=lambda *a: None,
+            config=CaptureConfig(),
+        )
+        assert collector._session_id == ""
+
+    def test_on_request_includes_session_id(self, collector_with_session, enqueue_fn):
+        params = _make_request_params("https://api.tidal.com/v1/tracks")
+        collector_with_session.on_request(params)
+        assert len(enqueue_fn.calls) == 1
+        _, payload = enqueue_fn.calls[0]
+        assert payload["session_id"] == "test-session-uuid"
+
+    def test_on_response_includes_session_id(self, collector_with_session, enqueue_fn):
+        # Seed request timestamp
+        req = _make_request_params("https://api.tidal.com/v1/tracks")
+        req["requestId"] = "sid-resp-001"
+        collector_with_session.on_request(req)
+        enqueue_fn.calls.clear()
+
+        resp = _make_response_params("https://api.tidal.com/v1/tracks", request_id="sid-resp-001")
+        collector_with_session.on_response(resp, body=None)
+        _, payload = enqueue_fn.calls[0]
+        assert payload["session_id"] == "test-session-uuid"
+
+    def test_on_cookies_includes_session_id(self, collector_with_session, enqueue_fn):
+        cookies = [
+            {"name": "session", "domain": "tidal.com", "value": "abc",
+             "httpOnly": False, "secure": True, "expires": 0, "path": "/"},
+        ]
+        collector_with_session.on_cookies(cookies)
+        assert len(enqueue_fn.calls) == 1
+        _, payload = enqueue_fn.calls[0]
+        assert payload["session_id"] == "test-session-uuid"
+
+    def test_on_storage_includes_session_id(self, collector_with_session, enqueue_fn):
+        collector_with_session.on_storage("https://tidal.com", "local", {"key1": "val1"})
+        assert len(enqueue_fn.calls) == 1
+        _, payload = enqueue_fn.calls[0]
+        assert payload["session_id"] == "test-session-uuid"
+
+    def test_on_websocket_frame_includes_session_id(self, collector_with_session, enqueue_fn):
+        params = {
+            "requestId": "ws-001",
+            "url": "wss://tidal.com/ws",
+            "response": {"payloadData": "hello", "opcode": 1},
+        }
+        collector_with_session.on_websocket_frame("sent", params)
+        _, payload = enqueue_fn.calls[0]
+        assert payload["session_id"] == "test-session-uuid"
+
+    def test_on_navigation_includes_session_id(self, collector_with_session, enqueue_fn):
+        params = {
+            "frame": {"url": "https://tidal.com/", "id": "f1", "mimeType": "text/html"},
+            "type": "Navigation",
+        }
+        collector_with_session.on_navigation(params)
+        assert len(enqueue_fn.calls) == 1
+        _, payload = enqueue_fn.calls[0]
+        assert payload["session_id"] == "test-session-uuid"

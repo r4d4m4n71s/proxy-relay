@@ -88,6 +88,14 @@ class CaptureConfig:
             auto-resolve to ``DEFAULT_REPORT_DIR``.
         auto_analyze: If ``True``, run console analysis after capture stops.
         auto_report: If ``True``, write a markdown report file after capture stops.
+        max_cdp_reconnects: Maximum CDP reconnect attempts before giving up (F-RL18).
+        cdp_reconnect_delay_s: Initial delay in seconds before the first reconnect.
+        cdp_reconnect_backoff_factor: Multiplicative factor applied after each reconnect.
+        cdp_reconnect_max_delay_s: Upper bound on the inter-reconnect delay.
+        rotate_db: If ``True``, rename the existing DB file before opening a new session
+            so each session gets a fresh database (F-RL21).
+        max_db_size_mb: Purge rotated DBs larger than this size in MiB (F-RL23).
+        max_db_age_days: Purge rotated DBs older than this many days (F-RL23).
     """
 
     db_path: Path | None = None
@@ -99,6 +107,15 @@ class CaptureConfig:
     report_dir: Path | None = None
     auto_analyze: bool = True
     auto_report: bool = False
+    # CDP reconnect backoff (F-RL18)
+    max_cdp_reconnects: int = 50
+    cdp_reconnect_delay_s: float = 2.0
+    cdp_reconnect_backoff_factor: float = 1.5
+    cdp_reconnect_max_delay_s: float = 60.0
+    # DB rotation and purge (F-RL21/F-RL23)
+    rotate_db: bool = True
+    max_db_size_mb: int = 500
+    max_db_age_days: int = 30
 
     def resolved_db_path(self) -> Path:
         """Return the effective database path, falling back to DEFAULT_CAPTURE_DB."""
