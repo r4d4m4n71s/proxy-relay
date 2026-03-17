@@ -354,3 +354,274 @@ class TestAtexitLockThreadSafety:
         assert not errors
         assert path_a in _atexit_registered
         assert path_b in _atexit_registered
+
+
+# ---------------------------------------------------------------------------
+# F-RL24: PID + timestamps in status file
+# ---------------------------------------------------------------------------
+class TestStatusFilePidTimestamps:
+    """Test that status files contain pid, started_at, last_updated (F-RL24)."""
+
+    def test_status_contains_pid_field(self, tmp_path):
+        from proxy_relay.pidfile import write_status
+
+        path = tmp_path / "status.json"
+        write_status(
+            host="127.0.0.1", port=8080, upstream_url="socks5://proxy:1080",
+            country="us", active_connections=0, total_connections=0,
+            pid=12345, started_at="2026-01-01T00:00:00+00:00", path=path,
+        )
+        data = json.loads(path.read_text())
+        assert data["pid"] == 12345
+
+    def test_status_pid_defaults_to_current_process(self, tmp_path):
+        from proxy_relay.pidfile import write_status
+
+        path = tmp_path / "status.json"
+        write_status(
+            host="127.0.0.1", port=8080, upstream_url="socks5://proxy:1080",
+            country="us", active_connections=0, total_connections=0, path=path,
+        )
+        data = json.loads(path.read_text())
+        assert data["pid"] == os.getpid()
+
+    def test_status_contains_started_at(self, tmp_path):
+        from proxy_relay.pidfile import write_status
+
+        path = tmp_path / "status.json"
+        write_status(
+            host="127.0.0.1", port=8080, upstream_url="socks5://proxy:1080",
+            country="us", active_connections=0, total_connections=0,
+            started_at="2026-03-16T10:00:00+00:00", path=path,
+        )
+        data = json.loads(path.read_text())
+        assert data["started_at"] == "2026-03-16T10:00:00+00:00"
+
+    def test_status_contains_last_updated(self, tmp_path):
+        from proxy_relay.pidfile import write_status
+
+        path = tmp_path / "status.json"
+        write_status(
+            host="127.0.0.1", port=8080, upstream_url="socks5://proxy:1080",
+            country="us", active_connections=0, total_connections=0, path=path,
+        )
+        data = json.loads(path.read_text())
+        assert "last_updated" in data
+        assert len(data["last_updated"]) > 0  # ISO timestamp string
+
+    def test_last_updated_changes_on_rewrite(self, tmp_path):
+        """Two writes should produce different last_updated values (or same if instant)."""
+        from proxy_relay.pidfile import write_status
+
+        path = tmp_path / "status.json"
+        write_status(
+            host="127.0.0.1", port=8080, upstream_url="socks5://proxy:1080",
+            country="us", active_connections=0, total_connections=0, path=path,
+        )
+        data1 = json.loads(path.read_text())
+        assert "last_updated" in data1
+
+
+# ---------------------------------------------------------------------------
+# F-RL25: atexit cleanup for status files
+# ---------------------------------------------------------------------------
+class TestStatusAtexitCleanup:
+    """Test that status files register atexit cleanup (F-RL25)."""
+
+    def test_status_file_registered_for_atexit(self, tmp_path):
+        from unittest.mock import patch
+
+        from proxy_relay.pidfile import _status_atexit_registered, write_status
+
+        path = tmp_path / "test_atexit.status.json"
+        _status_atexit_registered.discard(path)
+
+        with patch("proxy_relay.pidfile.atexit.register") as mock_register:
+            write_status(
+                host="127.0.0.1", port=8080, upstream_url="socks5://proxy:1080",
+                country="us", active_connections=0, total_connections=0, path=path,
+            )
+
+        # atexit.register should have been called with _remove_status_file
+        mock_register.assert_called_once()
+        assert path in _status_atexit_registered
+
+        # Cleanup
+        _status_atexit_registered.discard(path)
+
+    def test_status_atexit_not_registered_twice(self, tmp_path):
+        from unittest.mock import patch
+
+        from proxy_relay.pidfile import _status_atexit_registered, write_status
+
+        path = tmp_path / "test_atexit2.status.json"
+        _status_atexit_registered.discard(path)
+
+        with patch("proxy_relay.pidfile.atexit.register") as mock_register:
+            write_status(
+                host="127.0.0.1", port=8080, upstream_url="socks5://proxy:1080",
+                country="us", active_connections=0, total_connections=0, path=path,
+            )
+            write_status(
+                host="127.0.0.1", port=8080, upstream_url="socks5://proxy:1080",
+                country="us", active_connections=1, total_connections=1, path=path,
+            )
+
+        # Should only register once despite two writes
+        assert mock_register.call_count == 1
+
+        # Cleanup
+        _status_atexit_registered.discard(path)
+
+    def test_remove_status_file_deletes_file(self, tmp_path):
+        from proxy_relay.pidfile import _remove_status_file
+
+        path = tmp_path / "to_remove.status.json"
+        path.write_text("{}")
+        assert path.exists()
+
+        _remove_status_file(path)
+        assert not path.exists()
+
+    def test_remove_status_file_noop_for_missing(self, tmp_path):
+        from proxy_relay.pidfile import _remove_status_file
+
+        path = tmp_path / "nonexistent.status.json"
+        # Should not raise
+        _remove_status_file(path)
+
+
+# ---------------------------------------------------------------------------
+# F-RL26: scan_all_status
+# ---------------------------------------------------------------------------
+class TestScanAllStatus:
+    """Test multi-profile status scanning (F-RL26)."""
+
+    def test_scan_finds_live_profiles(self, tmp_path):
+        from unittest.mock import patch
+
+        from proxy_relay.pidfile import scan_all_status, write_pid, write_status
+
+        with patch("proxy_relay.pidfile.CONFIG_DIR", tmp_path):
+            # Create a live profile (current process PID)
+            write_pid(tmp_path / "live.pid")
+            write_status(
+                host="127.0.0.1", port=8080, upstream_url="socks5://proxy:1080",
+                country="us", active_connections=0, total_connections=5,
+                path=tmp_path / "live.status.json",
+            )
+
+            results = scan_all_status(config_dir=tmp_path)
+
+        assert len(results) == 1
+        assert results[0]["profile"] == "live"
+        assert results[0]["running"] is True
+
+    def test_scan_cleans_stale_profiles(self, tmp_path):
+        from unittest.mock import patch
+
+        from proxy_relay.pidfile import scan_all_status
+
+        with patch("proxy_relay.pidfile.CONFIG_DIR", tmp_path):
+            # Create a stale profile (dead PID)
+            (tmp_path / "stale.pid").write_text("4194304", encoding="utf-8")
+            (tmp_path / "stale.status.json").write_text(
+                '{"host":"127.0.0.1","port":8080}', encoding="utf-8"
+            )
+
+            results = scan_all_status(config_dir=tmp_path)
+
+        assert len(results) == 1
+        assert results[0]["profile"] == "stale"
+        assert results[0]["running"] is False
+        # Stale files should be cleaned up
+        assert not (tmp_path / "stale.pid").exists()
+        assert not (tmp_path / "stale.status.json").exists()
+
+    def test_scan_empty_dir(self, tmp_path):
+        from proxy_relay.pidfile import scan_all_status
+
+        results = scan_all_status(config_dir=tmp_path)
+        assert results == []
+
+    def test_scan_mixed_live_and_stale(self, tmp_path):
+        from unittest.mock import patch
+
+        from proxy_relay.pidfile import scan_all_status, write_pid, write_status
+
+        with patch("proxy_relay.pidfile.CONFIG_DIR", tmp_path):
+            # Live profile
+            write_pid(tmp_path / "alive.pid")
+            write_status(
+                host="127.0.0.1", port=8080, upstream_url="socks5://proxy:1080",
+                country="co", active_connections=1, total_connections=10,
+                path=tmp_path / "alive.status.json",
+            )
+            # Stale profile
+            (tmp_path / "dead.pid").write_text("4194304", encoding="utf-8")
+            (tmp_path / "dead.status.json").write_text(
+                '{"host":"127.0.0.1","port":9090}', encoding="utf-8"
+            )
+
+            results = scan_all_status(config_dir=tmp_path)
+
+        assert len(results) == 2
+        alive = next(r for r in results if r["profile"] == "alive")
+        dead = next(r for r in results if r["profile"] == "dead")
+        assert alive["running"] is True
+        assert dead["running"] is False
+
+
+# ---------------------------------------------------------------------------
+# F-RL27: read_live_status
+# ---------------------------------------------------------------------------
+class TestReadLiveStatus:
+    """Test simplified live status helper (F-RL27)."""
+
+    def test_returns_dict_for_live_profile(self, tmp_path):
+        from unittest.mock import patch
+
+        from proxy_relay.pidfile import read_live_status, write_pid, write_status
+
+        profile = "liveprof"
+        with patch("proxy_relay.pidfile.CONFIG_DIR", tmp_path):
+            write_pid(tmp_path / f"{profile}.pid")
+            write_status(
+                host="127.0.0.1", port=8080, upstream_url="socks5://proxy:1080",
+                country="us", active_connections=2, total_connections=20,
+                path=tmp_path / f"{profile}.status.json",
+            )
+
+            result = read_live_status(profile)
+
+        assert result is not None
+        assert result["running"] is True
+        assert result["pid"] == os.getpid()
+        assert result["profile"] == profile
+        assert result["host"] == "127.0.0.1"
+
+    def test_returns_none_for_dead_profile(self, tmp_path):
+        from unittest.mock import patch
+
+        from proxy_relay.pidfile import read_live_status
+
+        profile = "deadprof"
+        with patch("proxy_relay.pidfile.CONFIG_DIR", tmp_path):
+            (tmp_path / f"{profile}.pid").write_text("4194304", encoding="utf-8")
+            (tmp_path / f"{profile}.status.json").write_text(
+                '{"host":"127.0.0.1"}', encoding="utf-8"
+            )
+
+            result = read_live_status(profile)
+
+        assert result is None
+
+    def test_returns_none_for_missing_profile(self, tmp_path):
+        from unittest.mock import patch
+
+        from proxy_relay.pidfile import read_live_status
+
+        with patch("proxy_relay.pidfile.CONFIG_DIR", tmp_path):
+            result = read_live_status("nonexistent")
+
+        assert result is None

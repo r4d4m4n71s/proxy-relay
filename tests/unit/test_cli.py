@@ -446,3 +446,112 @@ class TestMain:
         with pytest.raises(SystemExit) as exc_info:
             parser.parse_args(["nonexistent"])
         assert exc_info.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# F-RL19: browse --capture pre-check before server auto-start
+# ---------------------------------------------------------------------------
+class TestBrowseCapturePreCheck:
+    """F-RL19: --capture dependency check happens before server auto-start."""
+
+    def test_capture_fails_early_if_deps_missing(self, capsys):
+        """browse --capture returns 1 immediately when capture deps are missing."""
+        from proxy_relay.cli import _cmd_browse
+        from proxy_relay.config import RelayConfig
+
+        args = argparse.Namespace(
+            config=None, profile=None, rotate_min=None, no_rotate=False,
+            capture=True, capture_domains=None, browser=None, start_url=None,
+        )
+        with patch("proxy_relay.cli.RelayConfig.load", return_value=RelayConfig()), \
+             patch("proxy_relay.cli.configure_logging"), \
+             patch("proxy_relay.capture.is_capture_available", return_value=False):
+            result = _cmd_browse(args)
+
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "capture requires optional dependencies" in captured.err.lower()
+
+    def test_capture_pre_check_runs_before_server_start(self):
+        """Capture deps check must run before auto_start_server is called."""
+        from proxy_relay.cli import _cmd_browse
+        from proxy_relay.config import RelayConfig
+
+        args = argparse.Namespace(
+            config=None, profile=None, rotate_min=None, no_rotate=False,
+            capture=True, capture_domains=None, browser=None, start_url=None,
+        )
+        auto_start_called = []
+
+        with patch("proxy_relay.cli.RelayConfig.load", return_value=RelayConfig()), \
+             patch("proxy_relay.cli.configure_logging"), \
+             patch("proxy_relay.capture.is_capture_available", return_value=False), \
+             patch("proxy_relay.cli._browse.auto_start_server",
+                   side_effect=lambda *a, **kw: auto_start_called.append(True)):
+            _cmd_browse(args)
+
+        # auto_start_server should NOT have been called
+        assert auto_start_called == []
+
+
+# ---------------------------------------------------------------------------
+# F-RL26: status --all
+# ---------------------------------------------------------------------------
+class TestCmdStatusAll:
+    """F-RL26: status --all scans all profiles."""
+
+    def test_status_all_flag_parsed(self):
+        """--all flag is available on status subparser."""
+        parser = build_parser()
+        args = parser.parse_args(["status", "--all"])
+        assert args.show_all is True
+
+    def test_status_all_default_false(self):
+        """--all defaults to False."""
+        parser = build_parser()
+        args = parser.parse_args(["status"])
+        assert args.show_all is False
+
+    def test_status_all_json_output(self, capsys):
+        """status --all --json outputs JSON array."""
+        args = argparse.Namespace(json_output=True, profile=None, show_all=True)
+        mock_statuses = [
+            {"profile": "browse", "running": True, "pid": 1234,
+             "host": "127.0.0.1", "port": 8080},
+            {"profile": "stealth", "running": False, "pid": 5678},
+        ]
+        with patch("proxy_relay.cli.scan_all_status", return_value=mock_statuses):
+            result = _cmd_status(args)
+
+        assert result == 0
+        captured = capsys.readouterr()
+        output = json.loads(captured.out)
+        assert len(output) == 2
+        assert output[0]["profile"] == "browse"
+        assert output[1]["profile"] == "stealth"
+
+    def test_status_all_human_readable(self, capsys):
+        """status --all shows human-readable table."""
+        args = argparse.Namespace(json_output=False, profile=None, show_all=True)
+        mock_statuses = [
+            {"profile": "browse", "running": True, "pid": 1234,
+             "host": "127.0.0.1", "port": 8080, "country": "us",
+             "active_connections": 2, "total_connections": 10},
+        ]
+        with patch("proxy_relay.cli.scan_all_status", return_value=mock_statuses):
+            result = _cmd_status(args)
+
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "browse" in captured.out
+        assert "running" in captured.out.lower()
+
+    def test_status_all_empty(self, capsys):
+        """status --all with no instances prints message."""
+        args = argparse.Namespace(json_output=False, profile=None, show_all=True)
+        with patch("proxy_relay.cli.scan_all_status", return_value=[]):
+            result = _cmd_status(args)
+
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "no proxy-relay instances" in captured.out.lower()

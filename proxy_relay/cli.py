@@ -21,6 +21,7 @@ from proxy_relay.pidfile import (
     read_status,
     read_status_if_alive,
     remove_pid,
+    scan_all_status,
     send_signal,
     status_path_for,
 )
@@ -114,6 +115,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="proxy-st profile name (default: 'browse')",
+    )
+    status_parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="show_all",
+        default=False,
+        help="Show status of all profiles (scans all status files)",
     )
 
     # rotate subcommand
@@ -397,6 +405,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success, non-zero for error).
     """
+    # F-RL26: --all shows status for all profiles
+    if getattr(args, "show_all", False):
+        return _cmd_status_all(args)
+
     profile = args.profile or "browse"
     running, pid, status_data = read_status_if_alive(profile)
 
@@ -444,6 +456,46 @@ def _cmd_status(args: argparse.Namespace) -> int:
             p95 = monitor.get("p95_latency_ms", 0)
             print(f"    Avg latency:     {avg:.0f}ms")
             print(f"    P95 latency:     {p95:.0f}ms")
+
+    return 0
+
+
+def _cmd_status_all(args: argparse.Namespace) -> int:
+    """Show status for all profiles (F-RL26).
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        Exit code (0 for success).
+    """
+    statuses = scan_all_status()
+
+    if args.json_output:
+        print(json.dumps(statuses, indent=2))
+        return 0
+
+    # Human-readable table
+    if not statuses:
+        print("No proxy-relay instances found.")
+        return 0
+
+    live = [s for s in statuses if s.get("running")]
+    print(f"proxy-relay instances: {len(live)} running / {len(statuses)} found\n")
+
+    for s in statuses:
+        profile = s.get("profile", "?")
+        running = s.get("running", False)
+        pid = s.get("pid")
+        if running:
+            host = s.get("host", "?")
+            port = s.get("port", "?")
+            country = s.get("country", "?")
+            active = s.get("active_connections", "?")
+            total = s.get("total_connections", "?")
+            print(f"  [{profile}] running (PID {pid}) — {host}:{port}, country={country}, conn={active}/{total}")
+        else:
+            print(f"  [{profile}] not running (stale, cleaned up)")
 
     return 0
 
@@ -557,6 +609,18 @@ def _cmd_browse(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # F-RL19: Check capture dependencies early, before server auto-start.
+    if getattr(args, "capture", False):
+        from proxy_relay.capture import is_capture_available
+
+        if not is_capture_available():
+            print(
+                "Capture requires optional dependencies: "
+                "install proxy-relay[capture] (websockets + telemetry-monitor)",
+                file=sys.stderr,
+            )
+            return 1
+
     # 2. Check if a server is already running for this profile
     auto_started = False
     server_proc = None
@@ -639,16 +703,10 @@ def _cmd_browse(args: argparse.Namespace) -> int:
         # 7. Optionally create capture session
         capture_session = None
         if getattr(args, "capture", False):
-            from proxy_relay.capture import CaptureSession, is_capture_available
+            from proxy_relay.capture import CaptureSession
             from proxy_relay.capture.models import DEFAULT_CAPTURE_DOMAINS, CaptureConfig
 
-            if not is_capture_available():
-                print(
-                    "Capture requires optional dependencies: "
-                    "install proxy-relay[capture] (websockets + telemetry-monitor)",
-                    file=sys.stderr,
-                )
-                return 1
+            # is_capture_available() already checked before server auto-start (F-RL19)
 
             # Build CaptureConfig: CLI --capture-domains overrides config/defaults
             raw_domains_arg = getattr(args, "capture_domains", None)

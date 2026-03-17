@@ -315,3 +315,68 @@ class TestSigpipeInStart:
             await server.start()
 
         assert _signal.SIGPIPE in signal_handlers
+
+
+# ---------------------------------------------------------------------------
+# F-RL24: started_at stored on start()
+# ---------------------------------------------------------------------------
+class TestServerStartedAt:
+    """Test that server records started_at timestamp and passes it to write_status (F-RL24)."""
+
+    @pytest.mark.asyncio
+    async def test_started_at_set_on_start(self):
+        """start() sets _started_at to an ISO timestamp."""
+        mgr = MagicMock(spec=UpstreamManager)
+        mgr.get_upstream.return_value = UpstreamInfo(
+            host="proxy.example.com", port=12322,
+            username="user", password="pass",
+            url="socks5://***@proxy.example.com:12322", country="us",
+        )
+        server = ProxyServer(host="127.0.0.1", port=18091, upstream_manager=mgr)
+
+        assert server._started_at == ""
+
+        with patch("asyncio.start_server", new_callable=AsyncMock) as mock_start, \
+             patch("proxy_relay.server.write_pid"), \
+             patch("proxy_relay.server.write_status") as mock_ws:
+            mock_srv = AsyncMock()
+            mock_srv.sockets = [MagicMock()]
+            mock_srv.sockets[0].getsockname.return_value = ("127.0.0.1", 18091)
+            mock_start.return_value = mock_srv
+
+            with patch("asyncio.get_running_loop") as mock_loop:
+                mock_loop.return_value = MagicMock()
+                await server.start()
+
+        assert server._started_at != ""
+        assert "T" in server._started_at  # ISO format contains T
+
+    @pytest.mark.asyncio
+    async def test_write_status_receives_pid_and_started_at(self):
+        """write_status is called with pid and started_at from server."""
+        mgr = MagicMock(spec=UpstreamManager)
+        mgr.get_upstream.return_value = UpstreamInfo(
+            host="proxy.example.com", port=12322,
+            username="user", password="pass",
+            url="socks5://***@proxy.example.com:12322", country="us",
+        )
+        mgr.profile_name = "browse"
+        server = ProxyServer(host="127.0.0.1", port=18092, upstream_manager=mgr)
+
+        with patch("asyncio.start_server", new_callable=AsyncMock) as mock_start, \
+             patch("proxy_relay.server.write_pid"), \
+             patch("proxy_relay.server.write_status") as mock_ws:
+            mock_srv = AsyncMock()
+            mock_srv.sockets = [MagicMock()]
+            mock_srv.sockets[0].getsockname.return_value = ("127.0.0.1", 18092)
+            mock_start.return_value = mock_srv
+
+            with patch("asyncio.get_running_loop") as mock_loop:
+                mock_loop.return_value = MagicMock()
+                await server.start()
+
+        # write_status should have been called with pid and started_at
+        assert mock_ws.called
+        call_kwargs = mock_ws.call_args
+        assert "pid" in call_kwargs.kwargs or len(call_kwargs.args) > 0
+        assert "started_at" in call_kwargs.kwargs or len(call_kwargs.args) > 0
