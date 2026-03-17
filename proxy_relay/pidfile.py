@@ -18,7 +18,7 @@ import os
 import signal
 import tempfile
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -250,7 +250,7 @@ def write_status(
         "profile": profile,
         "pid": pid if pid is not None else os.getpid(),
         "started_at": started_at or "",
-        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "last_updated": datetime.now(UTC).isoformat(),
         "active_connections": active_connections,
         "total_connections": total_connections,
     }

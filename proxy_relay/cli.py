@@ -11,7 +11,7 @@ from pathlib import Path
 from proxy_relay import __version__
 from proxy_relay import browse as _browse
 from proxy_relay.config import MonitorConfig, RelayConfig
-from proxy_relay.exceptions import BrowseError, ConfigError, ProxyRelayError, UpstreamError
+from proxy_relay.exceptions import BrowseError, ConfigError, ProxyRelayError
 from proxy_relay.logger import configure_logging, get_logger
 from proxy_relay.pidfile import (
     PID_PATH,

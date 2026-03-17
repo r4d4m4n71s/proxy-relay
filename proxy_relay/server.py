@@ -8,7 +8,7 @@ import signal
 import time
 from collections.abc import Callable
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from proxy_relay.config import MonitorConfig
 from proxy_relay.handler import handle_connection
@@ -121,7 +121,7 @@ class ProxyServer:
             )
 
         # Record start time (F-RL24)
-        self._started_at = datetime.now(timezone.utc).isoformat()
+        self._started_at = datetime.now(UTC).isoformat()
 
         # Start the TCP server
         self._server = await asyncio.start_server(
@@ -348,7 +348,7 @@ class ProxyServer:
                 "could not reach the target — the residential IP pool for this "
                 "region may be exhausted or the city targeting too narrow"
             )
-            hint_parts.append("try: proxy-st rotate --profile %s" % profile)
+            hint_parts.append(f"try: proxy-st rotate --profile {profile}")
             hint_parts.append(
                 "if rotation keeps failing, remove the 'city' setting from "
                 "the profile in ~/.config/proxy-st/config.toml"
@@ -358,7 +358,7 @@ class ProxyServer:
                 "the upstream proxy did not respond in time — the provider "
                 "may be experiencing an outage or the region is overloaded"
             )
-            hint_parts.append("try: proxy-st check --profile %s" % profile)
+            hint_parts.append(f"try: proxy-st check --profile {profile}")
 
         lines = [
             f"upstream unreachable after {_HEALTH_MAX_RETRIES} attempts "
