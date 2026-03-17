@@ -13,6 +13,7 @@ Public API
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import statistics
 from dataclasses import dataclass, field
@@ -115,13 +116,19 @@ class AnalysisReport:
     fingerprint_vectors: list[FingerprintVector] = field(default_factory=list)
     rate_limit_events: list[RateLimitEvent] = field(default_factory=list)
     behavioral_baseline: dict[str, Any] = field(default_factory=dict)
+    options_filtered: int = 0
     storage_intelligence: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ── Public API ───────────────────────────────────────────────────────────
 
 
-def analyze(db_path: Path, *, verbose: bool = False) -> AnalysisReport:
+def analyze(
+    db_path: Path,
+    *,
+    verbose: bool = False,
+    session_id: str | None = None,
+) -> AnalysisReport:
     """Run all analysis modules against a capture database.
 
     Opens the database in read-only mode and runs each analysis function.
@@ -129,6 +136,7 @@ def analyze(db_path: Path, *, verbose: bool = False) -> AnalysisReport:
     Args:
         db_path: Path to the capture.db SQLite file.
         verbose: If True, include full JSON key inventories.
+        session_id: If given, restrict analysis to this capture session.
 
     Returns:
         Populated :class:`AnalysisReport`.
@@ -142,24 +150,29 @@ def analyze(db_path: Path, *, verbose: bool = False) -> AnalysisReport:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
+        # Detect whether session_id column exists (Plan B adds it)
+        session_filter = _build_session_filter(conn, session_id)
+
         report = AnalysisReport(
             db_path=str(db_path),
             analyzed_at=datetime.now(UTC).isoformat(),
         )
 
         # Basic counts
-        report.total_requests = _count(conn, "http_requests")
-        report.total_responses = _count(conn, "http_responses")
-        report.session_duration_s = _session_duration(conn)
+        report.total_requests = _count(conn, "http_requests", session_filter)
+        report.total_responses = _count(conn, "http_responses", session_filter)
+        report.session_duration_s = _session_duration(conn, session_filter)
 
         # Analysis sections
-        report.api_surface = _analyze_api_surface(conn, verbose)
-        report.auth_events = _analyze_auth_flow(conn)
-        report.cookie_lifecycle = _analyze_cookies(conn)
-        report.fingerprint_vectors = _analyze_fingerprints(conn)
-        report.rate_limit_events = _analyze_rate_limits(conn)
-        report.behavioral_baseline = _analyze_behavior(conn)
-        report.storage_intelligence = _analyze_storage(conn)
+        surface, options_filtered = _analyze_api_surface(conn, verbose, session_filter)
+        report.api_surface = surface
+        report.options_filtered = options_filtered
+        report.auth_events = _analyze_auth_flow(conn, session_filter)
+        report.cookie_lifecycle = _analyze_cookies(conn, session_filter)
+        report.fingerprint_vectors = _analyze_fingerprints(conn, session_filter)
+        report.rate_limit_events = _analyze_rate_limits(conn, session_filter)
+        report.behavioral_baseline = _analyze_behavior(conn, session_filter)
+        report.storage_intelligence = _analyze_storage(conn, session_filter)
 
         return report
     finally:
@@ -176,8 +189,10 @@ def print_report(report: AnalysisReport) -> None:
 
     # API Surface
     total_endpoints = sum(len(eps) for eps in report.api_surface.values())
+    opts = (f", {report.options_filtered} OPTIONS filtered"
+            if report.options_filtered else "")
     print(f"\n--- API Surface ({len(report.api_surface)} domains,"
-          f" {total_endpoints} endpoints) ---")
+          f" {total_endpoints} endpoints{opts}) ---")
     for domain, endpoints in report.api_surface.items():
         total_calls = sum(e.call_count for e in endpoints)
         print(f"  {domain} ({len(endpoints)} endpoints, {total_calls} calls)")
@@ -218,8 +233,8 @@ def print_report(report: AnalysisReport) -> None:
     print("\n--- Behavioral Baseline ---")
     baseline = report.behavioral_baseline
     if baseline.get("gap_p50") is not None:
-        print(f"    Inter-request gap: p50={baseline['gap_p50']:.2f}s,"
-              f" p95={baseline.get('gap_p95', 0):.2f}s")
+        print(f"    Inter-request gap: p50={_format_gap(baseline['gap_p50'])},"
+              f" p95={_format_gap(baseline.get('gap_p95', 0))}")
     if baseline.get("requests_per_minute_avg") is not None:
         print(f"    Requests/min: avg={baseline['requests_per_minute_avg']:.1f},"
               f" peak={baseline.get('requests_per_minute_peak', 0)}")
@@ -264,6 +279,8 @@ def write_report(report: AnalysisReport, output_dir: Path | None = None) -> Path
     lines.append(f"- **Duration:** {_format_duration(report.session_duration_s)}")
     lines.append(f"- **Requests:** {report.total_requests} |"
                  f" **Responses:** {report.total_responses}")
+    if report.options_filtered:
+        lines.append(f"- **OPTIONS filtered:** {report.options_filtered}")
     lines.append("")
 
     # API Surface
@@ -341,19 +358,101 @@ def write_report(report: AnalysisReport, output_dir: Path | None = None) -> Path
     return path
 
 
+# ── Session filter helpers ───────────────────────────────────────────────
+
+# Type alias: (where_clause_fragment, params_tuple)
+_SessionFilter = tuple[str, tuple[str, ...]]
+
+
+def _build_session_filter(
+    conn: sqlite3.Connection, session_id: str | None
+) -> _SessionFilter:
+    """Build a reusable WHERE clause fragment for session_id filtering.
+
+    Returns ``("", ())`` when no filter is needed, or
+    ``("AND session_id = ?", (session_id,))`` when filtering is active and
+    the column exists.  Gracefully degrades on old DBs without the column.
+
+    Note: Call sites that join multiple tables must qualify ``session_id``
+    with the appropriate alias using :func:`_qualify_filter`.
+    """
+    if session_id is None:
+        return ("", ())
+    # Check if the session_id column exists in http_requests
+    try:
+        conn.execute("SELECT session_id FROM http_requests LIMIT 0")
+    except sqlite3.OperationalError:
+        log.warning(
+            "session_id column not found in DB — ignoring --session filter"
+        )
+        return ("", ())
+    return ("AND session_id = ?", (session_id,))
+
+
+def _qualify_filter(sf: _SessionFilter, alias: str) -> _SessionFilter:
+    """Qualify bare ``session_id`` in a filter fragment with a table alias."""
+    frag, params = sf
+    if not frag:
+        return sf
+    return (frag.replace("AND session_id", f"AND {alias}.session_id"), params)
+
+
+# ── URL normalization for CDN/image collapsing (F-RL13) ─────────────────
+
+# Patterns that collapse highly variable path segments
+_CDN_IMAGE_RE = re.compile(
+    r"^(/images/[^/]+/)\d+x\d+\.jpg$"
+)
+_CDN_SEGMENT_RE = re.compile(
+    r"^(/[a-f0-9]{16,}/)([\w-]+-\d+\.m4[sa])$"
+)
+# Strip per-request query params that make URLs unique
+_STRIP_QUERY_PARAMS = frozenset({"token", "nonce", "ts", "sig", "signature", "t"})
+
+
+def _normalize_path(domain: str, path: str, query: str) -> str:
+    """Collapse CDN/image URL paths into representative patterns.
+
+    Returns a normalized path suitable for grouping.
+    """
+    # Collapse resources.tidal.com image sizes
+    m = _CDN_IMAGE_RE.match(path)
+    if m:
+        return f"{m.group(1)}{{WxH}}.jpg"
+
+    # Collapse CDN segment URLs (e.g. /{hash}/segment-42.m4s -> /{hash}/{segments})
+    m = _CDN_SEGMENT_RE.match(path)
+    if m:
+        return f"{m.group(1)}{{segments}}"
+
+    return path
+
+
 # ── Internal analysis functions ──────────────────────────────────────────
 
 
-def _count(conn: sqlite3.Connection, table: str) -> int:
+def _count(
+    conn: sqlite3.Connection,
+    table: str,
+    session_filter: _SessionFilter = ("", ()),
+) -> int:
     """Return row count for a table (safe — table name is never user input)."""
-    cursor = conn.execute(f"SELECT count(*) FROM {table}")  # noqa: S608
+    where_frag, params = session_filter
+    where = f"WHERE 1=1 {where_frag}" if where_frag else ""
+    cursor = conn.execute(f"SELECT count(*) FROM {table} {where}", params)  # noqa: S608
     return cursor.fetchone()[0]
 
 
-def _session_duration(conn: sqlite3.Connection) -> float:
+def _session_duration(
+    conn: sqlite3.Connection,
+    session_filter: _SessionFilter = ("", ()),
+) -> float:
     """Compute session duration from earliest to latest request timestamp."""
+    where_frag, params = session_filter
+    where = f"WHERE 1=1 {where_frag}" if where_frag else ""
     cursor = conn.execute(
-        "SELECT min(timestamp), max(timestamp) FROM http_requests"
+        f"SELECT min(timestamp), max(timestamp) FROM http_requests {where}",
+        params,
     )
     row = cursor.fetchone()
     if row is None or row[0] is None or row[1] is None:
@@ -367,33 +466,53 @@ def _session_duration(conn: sqlite3.Connection) -> float:
 
 
 def _analyze_api_surface(
-    conn: sqlite3.Connection, verbose: bool
-) -> dict[str, list[EndpointInfo]]:
-    """Extract unique endpoints grouped by domain."""
+    conn: sqlite3.Connection,
+    verbose: bool,
+    session_filter: _SessionFilter = ("", ()),
+) -> tuple[dict[str, list[EndpointInfo]], int]:
+    """Extract unique endpoints grouped by domain.
+
+    Returns ``(api_surface_dict, options_filtered_count)``.
+    """
+    qf_frag, qf_params = _qualify_filter(session_filter, "r")
+    where = f"WHERE 1=1 {qf_frag}" if qf_frag else ""
     cursor = conn.execute(
-        "SELECT r.url, r.method, s.status, s.body"
-        " FROM http_requests r"
-        " LEFT JOIN http_responses s ON r.request_id = s.request_id"
-        " ORDER BY r.url"
+        f"SELECT r.url, r.method, s.status, s.body"  # noqa: S608
+        f" FROM http_requests r"
+        f" LEFT JOIN http_responses s ON r.request_id = s.request_id"
+        f" {where}"
+        f" ORDER BY r.url",
+        qf_params,
     )
 
     # Accumulate per endpoint
-    endpoints: dict[str, dict[str, Any]] = {}  # "domain|path|method" -> info
+    endpoints: dict[str, dict[str, Any]] = {}  # "domain|norm_path|method" -> info
+    options_filtered = 0
+    sample_bodies: dict[str, str] = {}  # key -> first non-empty body (F-RL14)
+
     for row in cursor:
         url = row[0] or ""
         method = row[1] or "GET"
         status = row[2] or 0
         body = row[3] or ""
 
+        # F-RL15: filter OPTIONS preflight requests
+        if method == "OPTIONS":
+            options_filtered += 1
+            continue
+
         parsed = urlparse(url)
         domain = parsed.hostname or ""
-        path = parsed.path or "/"
+        raw_path = parsed.path or "/"
 
-        key = f"{domain}|{path}|{method}"
+        # F-RL13: normalize CDN/image paths
+        norm_path = _normalize_path(domain, raw_path, parsed.query)
+
+        key = f"{domain}|{norm_path}|{method}"
         if key not in endpoints:
             endpoints[key] = {
                 "domain": domain,
-                "path": path,
+                "path": norm_path,
                 "method": method,
                 "status_codes": set(),
                 "call_count": 0,
@@ -403,20 +522,31 @@ def _analyze_api_surface(
         info["call_count"] += 1
         if status:
             info["status_codes"].add(status)
+
+        # Verbose: accumulate all JSON keys
         if verbose and body:
             keys = _extract_json_keys(body)
             info["json_keys"].update(keys)
 
+        # F-RL14: store first body sample for non-verbose key extraction
+        if body and key not in sample_bodies:
+            sample_bodies[key] = body
+
     # Group by domain
     result: dict[str, list[EndpointInfo]] = {}
-    for info in endpoints.values():
+    for key, info in endpoints.items():
+        # F-RL14: extract JSON keys from sample body even in non-verbose mode
+        json_keys: set[str] = info["json_keys"]
+        if not verbose and key in sample_bodies:
+            json_keys = _extract_json_keys(sample_bodies[key])
+
         ep = EndpointInfo(
             domain=info["domain"],
             path=info["path"],
             method=info["method"],
             status_codes=sorted(info["status_codes"]),
             call_count=info["call_count"],
-            json_keys=sorted(info["json_keys"]) if verbose else [],
+            json_keys=sorted(json_keys),
         )
         result.setdefault(ep.domain, []).append(ep)
 
@@ -424,18 +554,24 @@ def _analyze_api_surface(
     for domain in result:
         result[domain].sort(key=lambda e: e.call_count, reverse=True)
 
-    return result
+    return result, options_filtered
 
 
-def _analyze_auth_flow(conn: sqlite3.Connection) -> list[AuthEvent]:
+def _analyze_auth_flow(
+    conn: sqlite3.Connection,
+    session_filter: _SessionFilter = ("", ()),
+) -> list[AuthEvent]:
     """Find auth-related requests and reconstruct token lifecycle."""
     conditions = " OR ".join(f"lower(r.url) LIKE '{p}'" for p in _AUTH_URL_PATTERNS)
+    qf_frag, qf_params = _qualify_filter(session_filter, "r")
+    extra = f" {qf_frag}" if qf_frag else ""
     cursor = conn.execute(
         f"SELECT r.timestamp, r.url, r.method, s.status, s.response_ms"  # noqa: S608
         f" FROM http_requests r"
         f" LEFT JOIN http_responses s ON r.request_id = s.request_id"
-        f" WHERE {conditions}"
-        f" ORDER BY r.timestamp"
+        f" WHERE ({conditions}){extra}"
+        f" ORDER BY r.timestamp",
+        qf_params,
     )
 
     events: list[AuthEvent] = []
@@ -450,14 +586,21 @@ def _analyze_auth_flow(conn: sqlite3.Connection) -> list[AuthEvent]:
     return events
 
 
-def _analyze_cookies(conn: sqlite3.Connection) -> list[CookieLifecycle]:
+def _analyze_cookies(
+    conn: sqlite3.Connection,
+    session_filter: _SessionFilter = ("", ()),
+) -> list[CookieLifecycle]:
     """Map cookie mutation frequency from cookie snapshots."""
+    where_frag, params = session_filter
+    where = f"WHERE 1=1 {where_frag}" if where_frag else ""
     cursor = conn.execute(
-        "SELECT domain, name, count(*) as snapshots,"
-        " min(timestamp) as first_seen, max(timestamp) as last_seen"
-        " FROM cookies"
-        " GROUP BY domain, name"
-        " ORDER BY snapshots DESC"
+        f"SELECT domain, name, count(*) as snapshots,"  # noqa: S608
+        f" min(timestamp) as first_seen, max(timestamp) as last_seen"
+        f" FROM cookies"
+        f" {where}"
+        f" GROUP BY domain, name"
+        f" ORDER BY snapshots DESC",
+        params,
     )
 
     result: list[CookieLifecycle] = []
@@ -472,9 +615,18 @@ def _analyze_cookies(conn: sqlite3.Connection) -> list[CookieLifecycle]:
     return result
 
 
-def _analyze_fingerprints(conn: sqlite3.Connection) -> list[FingerprintVector]:
+def _analyze_fingerprints(
+    conn: sqlite3.Connection,
+    session_filter: _SessionFilter = ("", ()),
+) -> list[FingerprintVector]:
     """Extract and score header fingerprint consistency."""
-    cursor = conn.execute("SELECT headers FROM http_requests WHERE headers != ''")
+    where_frag, params = session_filter
+    base_where = "WHERE headers != ''"
+    where = f"{base_where} {where_frag}" if where_frag else base_where
+    cursor = conn.execute(
+        f"SELECT headers FROM http_requests {where}",  # noqa: S608
+        params,
+    )
 
     header_values: dict[str, list[str]] = {}  # lowercase_name -> [values]
     for row in cursor:
@@ -501,15 +653,23 @@ def _analyze_fingerprints(conn: sqlite3.Connection) -> list[FingerprintVector]:
     return result
 
 
-def _analyze_rate_limits(conn: sqlite3.Connection) -> list[RateLimitEvent]:
+def _analyze_rate_limits(
+    conn: sqlite3.Connection,
+    session_filter: _SessionFilter = ("", ()),
+) -> list[RateLimitEvent]:
     """Detect 429/403 responses and compute preceding request volume."""
+    sf_frag, sf_params = _qualify_filter(session_filter, "s")
+    base_where = "WHERE s.status IN (429, 403)"
+    where = f"{base_where} {sf_frag}" if sf_frag else base_where
     cursor = conn.execute(
-        "SELECT s.timestamp, s.url, s.status"
-        " FROM http_responses s"
-        " WHERE s.status IN (429, 403)"
-        " ORDER BY s.timestamp"
+        f"SELECT s.timestamp, s.url, s.status"  # noqa: S608
+        f" FROM http_responses s"
+        f" {where}"
+        f" ORDER BY s.timestamp",
+        sf_params,
     )
 
+    req_frag, req_params = session_filter  # unqualified — single-table query
     events: list[RateLimitEvent] = []
     for row in cursor:
         ts = str(row[0] or "")
@@ -520,9 +680,10 @@ def _analyze_rate_limits(conn: sqlite3.Connection) -> list[RateLimitEvent]:
         preceding = 0
         if ts:
             count_cursor = conn.execute(
-                "SELECT count(*) FROM http_requests"
-                " WHERE timestamp BETWEEN datetime(?, '-60 seconds') AND ?",
-                (ts, ts),
+                f"SELECT count(*) FROM http_requests"
+                f" WHERE timestamp BETWEEN datetime(?, '-60 seconds') AND ?"
+                f" {req_frag}",
+                (ts, ts, *req_params),
             )
             preceding = count_cursor.fetchone()[0]
 
@@ -535,10 +696,16 @@ def _analyze_rate_limits(conn: sqlite3.Connection) -> list[RateLimitEvent]:
     return events
 
 
-def _analyze_behavior(conn: sqlite3.Connection) -> dict[str, Any]:
+def _analyze_behavior(
+    conn: sqlite3.Connection,
+    session_filter: _SessionFilter = ("", ()),
+) -> dict[str, Any]:
     """Compute inter-request timing distribution and session patterns."""
+    where_frag, params = session_filter
+    where = f"WHERE 1=1 {where_frag}" if where_frag else ""
     cursor = conn.execute(
-        "SELECT timestamp FROM http_requests ORDER BY timestamp"
+        f"SELECT timestamp FROM http_requests {where} ORDER BY timestamp",
+        params,
     )
     timestamps: list[datetime] = []
     for row in cursor:
@@ -587,13 +754,20 @@ def _analyze_behavior(conn: sqlite3.Connection) -> dict[str, Any]:
     return result
 
 
-def _analyze_storage(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def _analyze_storage(
+    conn: sqlite3.Connection,
+    session_filter: _SessionFilter = ("", ()),
+) -> list[dict[str, Any]]:
     """Inventory and classify storage keys by purpose."""
+    where_frag, params = session_filter
+    where = f"WHERE 1=1 {where_frag}" if where_frag else ""
     cursor = conn.execute(
-        "SELECT origin, storage_type, key, count(*) as mutations"
-        " FROM storage_snapshots"
-        " GROUP BY origin, storage_type, key"
-        " ORDER BY mutations DESC"
+        f"SELECT origin, storage_type, key, count(*) as mutations"  # noqa: S608
+        f" FROM storage_snapshots"
+        f" {where}"
+        f" GROUP BY origin, storage_type, key"
+        f" ORDER BY mutations DESC",
+        params,
     )
 
     result: list[dict[str, Any]] = []
@@ -613,12 +787,18 @@ def _analyze_storage(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def _parse_headers(headers_str: str) -> dict[str, str]:
-    """Parse newline-separated ``Name: Value`` headers into a dict."""
+    """Parse newline-separated ``Name: Value`` headers into a dict.
+
+    Handles both ``Name: Value`` and ``Name:Value`` (no space after colon).
+    """
     result: dict[str, str] = {}
     for line in headers_str.split("\n"):
-        if ": " in line:
-            name, value = line.split(": ", 1)
-            result[name.strip()] = value.strip()
+        if ":" in line:
+            name, _, value = line.partition(":")
+            name = name.strip()
+            value = value.strip()
+            if name:
+                result[name] = value
     return result
 
 
@@ -646,6 +826,16 @@ def _classify_storage_key(key: str) -> str:
         if pattern in lower:
             return "prefs"
     return "other"
+
+
+def _format_gap(seconds: float) -> str:
+    """Format an inter-request gap with appropriate precision.
+
+    Sub-second gaps are displayed in milliseconds for clarity.
+    """
+    if seconds < 1.0:
+        return f"{seconds * 1000:.0f}ms"
+    return f"{seconds:.2f}s"
 
 
 def _format_duration(seconds: float) -> str:
