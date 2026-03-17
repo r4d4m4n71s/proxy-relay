@@ -248,10 +248,17 @@ Optional section. When present, enables CDP traffic capture via the Chrome DevTo
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `domains` | list of strings | `["tidal.com", "qobuz.com"]` | Domain suffixes to capture traffic for. Matching is suffix-based: `"tidal.com"` also captures `api.tidal.com`. |
-| `db_path` | string | `~/.config/proxy-relay/capture.db` | Path to the SQLite capture database. Created on first use with permissions `0600`. |
+| `db_path` | string | `~/.config/proxy-relay/capture/capture.db` | Path to the SQLite capture database. Created on first use with permissions `0600`. |
 | `max_body_bytes` | integer | `65536` | Maximum UTF-8 bytes of request/response body and WebSocket payload stored per event. Larger payloads are truncated. |
 | `cookie_poll_interval_s` | float | `30.0` | Seconds between `Network.getAllCookies` polls. Only new or changed cookies are written. |
 | `storage_poll_interval_s` | float | `60.0` | Seconds between localStorage/sessionStorage polls. Only changed or removed keys are written. |
+| `rotate_db` | boolean | `true` | Rename existing DB before opening a new session so each session gets a fresh database. Rotated files are named `capture-{ISO-timestamp}.db`. |
+| `max_db_size_mb` | integer | `500` | Purge rotated capture DBs larger than this size in MiB. Set to `0` to disable size-based purge. |
+| `max_db_age_days` | integer | `30` | Purge rotated capture DBs older than this many days. Set to `0` to disable age-based purge. |
+| `max_cdp_reconnects` | integer | `50` | Maximum CDP WebSocket reconnect attempts before giving up. |
+| `cdp_reconnect_delay_s` | float | `2.0` | Initial delay in seconds before the first CDP reconnect attempt. |
+| `cdp_reconnect_backoff_factor` | float | `1.5` | Multiplicative factor applied to the delay after each reconnect attempt. |
+| `cdp_reconnect_max_delay_s` | float | `60.0` | Upper bound on the inter-reconnect delay in seconds. |
 
 ```toml
 [capture]
@@ -259,6 +266,9 @@ domains = ["tidal.com", "qobuz.com"]
 max_body_bytes = 65536
 cookie_poll_interval_s = 30.0
 storage_poll_interval_s = 60.0
+rotate_db = true
+max_db_size_mb = 500
+max_db_age_days = 30
 ```
 
 Config values are used as defaults when `proxy-relay browse --capture` is run. All parameters can be overridden per-session with `--capture-domains` on the CLI. The `db_path` and header-redaction list cannot be overridden from the CLI; set them in `config.toml`.
@@ -269,15 +279,26 @@ The following headers are always redacted in stored payloads (value replaced wit
 
 `authorization`, `cookie`, `set-cookie`, `x-tidal-token`, `x-user-auth-token`, `proxy-authorization`
 
+### POST body redaction
+
+The following field names are redacted (value replaced with `"[REDACTED]"`) in captured POST bodies. Both JSON and URL-encoded form bodies are supported.
+
+`password`, `passwd`, `_password`, `client_secret`, `secret`, `g-recaptcha-response`, `recaptcha`
+
+Custom fields can be configured via `redact_post_fields` in `CaptureConfig` (not yet exposed in TOML config).
+
 ### Database tables
+
+All tables include a `session_id` column (UUID v4) to distinguish data from different capture sessions.
 
 | Table | Contents |
 |-------|---------|
-| `http_requests` | URL, method, headers, POST body, request ID, profile |
-| `http_responses` | URL, status, MIME type, headers, body, response latency (ms), profile |
-| `cookies` | Domain, name, value (httpOnly values as SHA-256 hash), flags, expiry, profile |
-| `storage_snapshots` | Origin, storage type (localStorage/sessionStorage), key, value, change type, profile |
-| `websocket_frames` | Request ID, URL, direction (sent/received), payload, opcode, profile |
+| `http_requests` | URL, method, headers, POST body, request ID, session ID, profile |
+| `http_responses` | URL, status, MIME type, headers, body, response latency (ms), session ID, profile |
+| `cookies` | Domain, name, value (httpOnly values as SHA-256 hash), flags, expiry, session ID, profile |
+| `storage_snapshots` | Origin, storage type (localStorage/sessionStorage), key, value, change type, session ID, profile |
+| `websocket_frames` | Request ID, URL, direction (sent/received), payload, opcode, session ID, profile |
+| `page_navigations` | URL, frame ID, transition type, MIME type, session ID, profile |
 
 ---
 
@@ -303,14 +324,15 @@ Stop the running server. Sends SIGTERM to the process identified by the profile-
 |------|------|---------|-------------|
 | `--profile` | string | `"browse"` | proxy-st profile name — identifies which server instance to stop |
 
-### `proxy-relay status [--json]`
+### `proxy-relay status [--json] [--all]`
 
 Show server status: PID, bind address, upstream proxy, country, connection counts, and monitor stats.
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--json` | flag | off | Output as JSON instead of human-readable text |
-| `--profile` | string | `"browse"` | proxy-st profile name — identifies which server instance to query |
+| `--all` | flag | off | Scan all `*.status.json` files, validate PIDs, show all live relays. Auto-cleans stale files. |
+| `--profile` | string | `"browse"` | proxy-st profile name — identifies which server instance to query (ignored when `--all` is set) |
 
 ### `proxy-relay rotate`
 

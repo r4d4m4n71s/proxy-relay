@@ -7,7 +7,7 @@ Repo: https://github.com/r4d4m4n71s/proxy-relay (private)
 All persistent state: `~/.config/proxy-relay/` (config.toml, PID files, status files, browser profiles)
 
 ## Project status
-**432 tests on `main`** | 21 production modules, 23 test files. S63 complete: async I/O refactor in `server.py` (C4-17). CDP capture subpackage added (5 modules, 132 tests) — smoke-tested with 165 events from tidal.com.
+**650 tests on `main`** | 23 production modules, 26 test files. S81 complete: F-RL28 capture POST body redaction. S80-proxy: F-RL13–27 (15 items) capture lifecycle + report quality + status/lifecycle. CDP capture subpackage (7 modules, ~250 tests) — session_id UUID, DB rotation, purge, POST body redaction, configurable CDP backoff.
 
 ### Async I/O refactor (S63 — C4-17)
 4 blocking I/O paths in `server.py` are now wrapped with `asyncio.to_thread()`:
@@ -69,11 +69,12 @@ proxy_relay/
     tz.py               Timezone mismatch detection + country-to-IANA mapping (40+ countries)
     browse.py           Chromium discovery, health check client, BrowseSupervisor, auto-start/stop server
     capture/
-        __init__.py     CaptureSession orchestrator, is_capture_available, _find_free_port
-        models.py       CaptureConfig dataclass + module-level constants (defaults, redact list)
+        __init__.py     CaptureSession orchestrator, DB rotation, purge, session UUID, configurable CDP backoff
+        models.py       CaptureConfig dataclass + defaults (reconnect, rotation, purge, redact fields)
         cdp_client.py   Async WebSocket CDP client (lazy-imports websockets)
-        collector.py    CaptureCollector: domain filter, header redaction, body truncation, cookie/storage diff
-        schema.py       PROXY_RELAY_SCHEMA — 5 tables, 5 routes, 16 dashboards for telemetry-monitor
+        collector.py    CaptureCollector: domain filter, header/POST body redaction, body truncation, cookie/storage diff
+        analyzer.py     Capture report generator: URL pattern collapsing, session filtering, behavioral baselines
+        schema.py       PROXY_RELAY_SCHEMA — 6 tables, 5 routes, 16 dashboards for telemetry-monitor
 ```
 
 ## Tests
