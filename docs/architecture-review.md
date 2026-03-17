@@ -1,12 +1,13 @@
-# Architecture Review — 2026-03-14
+# Architecture Review — proxy-relay
 
-Cross-project architect review (2 passes: code analysis + documentation drift).
+**Last review:** 2026-03-16 (Batch G)
+**Prior review:** 2026-03-14 (31 findings: 4 done, 27 open — pre-existing doc/code items)
+**Batch G:** 15 findings (1 high, 6 medium, 8 low) — all resolved 2026-03-16.
 
-## Summary
+## Prior Findings (2026-03-14)
 
-- Pass 1 (code): 20 findings (0 high, 6 medium, 14 low)
-- Pass 2 (docs): 11 findings (1 high, 3 medium, 7 low)
-- Total: 31 findings
+31 findings from initial review (2 passes: code analysis + documentation drift).
+4 resolved in S75/S80 sprints; 27 remain open (pre-existing doc/code items, not prioritized).
 
 ## Findings
 
