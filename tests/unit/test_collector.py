@@ -736,3 +736,167 @@ class TestCollectorSessionId:
         assert len(enqueue_fn.calls) == 1
         _, payload = enqueue_fn.calls[0]
         assert payload["session_id"] == "test-session-uuid"
+
+
+# ---------------------------------------------------------------------------
+# F-RL28 — POST body redaction
+# ---------------------------------------------------------------------------
+
+
+class TestRedactPostBody:
+    """Verify _redact_post_body scrubs sensitive fields (F-RL28)."""
+
+    @pytest.fixture
+    def collector(self):
+        from proxy_relay.capture.collector import CaptureCollector
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig()
+        return CaptureCollector(enqueue_fn=lambda *a: None, config=cfg)
+
+    # JSON bodies
+
+    def test_json_password_field_redacted(self, collector):
+        body = '{"username": "alice", "password": "s3cr3t"}'
+        result = collector._redact_post_body(body)
+        import json
+        data = json.loads(result)
+        assert data["password"] == "[REDACTED]"
+        assert data["username"] == "alice"
+
+    def test_json_g_recaptcha_redacted(self, collector):
+        body = '{"email": "a@b.com", "g-recaptcha-response": "03AGdBq..."}'
+        result = collector._redact_post_body(body)
+        import json
+        data = json.loads(result)
+        assert data["g-recaptcha-response"] == "[REDACTED]"
+
+    def test_json_client_secret_redacted(self, collector):
+        body = '{"client_id": "abc", "client_secret": "xyz"}'
+        result = collector._redact_post_body(body)
+        import json
+        data = json.loads(result)
+        assert data["client_secret"] == "[REDACTED]"
+        assert data["client_id"] == "abc"
+
+    def test_json_case_insensitive(self, collector):
+        body = '{"Password": "hunter2"}'
+        result = collector._redact_post_body(body)
+        import json
+        data = json.loads(result)
+        assert data["Password"] == "[REDACTED]"
+
+    def test_json_no_sensitive_fields_unchanged(self, collector):
+        body = '{"track_id": 123, "quality": "HIGH"}'
+        assert collector._redact_post_body(body) == body
+
+    def test_json_non_object_unchanged(self, collector):
+        body = '["a", "b"]'
+        assert collector._redact_post_body(body) == body
+
+    # URL-encoded bodies
+
+    def test_urlencoded_password_redacted(self, collector):
+        body = "username=alice&password=s3cr3t&remember=1"
+        result = collector._redact_post_body(body)
+        from urllib.parse import parse_qs
+        params = parse_qs(result)
+        assert params["password"] == ["[REDACTED]"]
+        assert params["username"] == ["alice"]
+
+    def test_urlencoded_passwd_redacted(self, collector):
+        body = "user=bob&passwd=abc123"
+        result = collector._redact_post_body(body)
+        from urllib.parse import parse_qs
+        params = parse_qs(result)
+        assert params["passwd"] == ["[REDACTED]"]
+
+    def test_urlencoded_no_sensitive_fields_unchanged(self, collector):
+        body = "track_id=99&format=flac"
+        assert collector._redact_post_body(body) == body
+
+    # Edge cases
+
+    def test_empty_string_unchanged(self, collector):
+        assert collector._redact_post_body("") == ""
+
+    def test_non_parseable_body_unchanged(self, collector):
+        body = "binary\x00data\xff"
+        assert collector._redact_post_body(body) == body
+
+    def test_custom_redact_fields(self):
+        from proxy_relay.capture.collector import CaptureCollector
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig(redact_post_fields=frozenset({"api_key"}))
+        c = CaptureCollector(enqueue_fn=lambda *a: None, config=cfg)
+        body = '{"api_key": "secret123", "query": "hello"}'
+        import json
+        result = json.loads(c._redact_post_body(body))
+        assert result["api_key"] == "[REDACTED]"
+        assert result["query"] == "hello"
+
+    def test_on_request_redacts_password_in_payload(self):
+        """on_request() must store a redacted post_data in the emitted payload."""
+        calls: list[tuple] = []
+        from proxy_relay.capture.collector import CaptureCollector
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig(domains=frozenset({"tidal.com"}))
+        c = CaptureCollector(
+            enqueue_fn=lambda e, p: calls.append((e, p)),
+            config=cfg,
+        )
+        params = {
+            "requestId": "r1",
+            "request": {
+                "url": "https://auth.tidal.com/v1/oauth2/token",
+                "method": "POST",
+                "headers": {},
+                "postData": "username=alice&password=hunter2",
+            },
+            "initiator": {"type": "script"},
+        }
+        c.on_request(params)
+        assert len(calls) == 1
+        _, payload = calls[0]
+        import json as _json
+        from urllib.parse import parse_qs
+        stored = payload["post_data"]
+        params_stored = parse_qs(stored)
+        assert params_stored.get("password") == ["[REDACTED]"]
+        assert params_stored.get("username") == ["alice"]
+
+
+class TestCaptureConfigRedactPostFieldsDefaults:
+    """Verify default redact_post_fields set (F-RL28)."""
+
+    def test_default_includes_password(self):
+        from proxy_relay.capture.models import CaptureConfig
+        cfg = CaptureConfig()
+        assert "password" in cfg.redact_post_fields
+
+    def test_default_includes_passwd(self):
+        from proxy_relay.capture.models import CaptureConfig
+        cfg = CaptureConfig()
+        assert "passwd" in cfg.redact_post_fields
+
+    def test_default_includes_g_recaptcha_response(self):
+        from proxy_relay.capture.models import CaptureConfig
+        cfg = CaptureConfig()
+        assert "g-recaptcha-response" in cfg.redact_post_fields
+
+    def test_default_includes_client_secret(self):
+        from proxy_relay.capture.models import CaptureConfig
+        cfg = CaptureConfig()
+        assert "client_secret" in cfg.redact_post_fields
+
+    def test_default_is_frozenset(self):
+        from proxy_relay.capture.models import CaptureConfig
+        cfg = CaptureConfig()
+        assert isinstance(cfg.redact_post_fields, frozenset)
+
+    def test_custom_redact_post_fields(self):
+        from proxy_relay.capture.models import CaptureConfig
+        cfg = CaptureConfig(redact_post_fields=frozenset({"api_key"}))
+        assert cfg.redact_post_fields == frozenset({"api_key"})

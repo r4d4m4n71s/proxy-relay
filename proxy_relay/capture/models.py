@@ -23,6 +23,18 @@ DEFAULT_REDACT_HEADERS: frozenset[str] = frozenset(
     }
 )
 
+DEFAULT_REDACT_POST_FIELDS: frozenset[str] = frozenset(
+    {
+        "password",
+        "passwd",
+        "_password",
+        "client_secret",
+        "secret",
+        "g-recaptcha-response",
+        "recaptcha",
+    }
+)
+
 MAX_BODY_BYTES: int = 65_536
 INDEXEDDB_PAGE_SIZE: int = 100
 
@@ -88,6 +100,10 @@ class CaptureConfig:
             auto-resolve to ``DEFAULT_REPORT_DIR``.
         auto_analyze: If ``True``, run console analysis after capture stops.
         auto_report: If ``True``, write a markdown report file after capture stops.
+        redact_post_fields: Lowercase field names whose values are replaced with
+            ``"[REDACTED]"`` in stored POST bodies (JSON and URL-encoded forms).
+            Protects passwords and reCAPTCHA tokens from being stored in plaintext
+            in the capture DB (F-RL28).
         max_cdp_reconnects: Maximum CDP reconnect attempts before giving up (F-RL18).
         cdp_reconnect_delay_s: Initial delay in seconds before the first reconnect.
         cdp_reconnect_backoff_factor: Multiplicative factor applied after each reconnect.
@@ -107,6 +123,9 @@ class CaptureConfig:
     report_dir: Path | None = None
     auto_analyze: bool = True
     auto_report: bool = False
+    redact_post_fields: frozenset[str] = field(
+        default_factory=lambda: DEFAULT_REDACT_POST_FIELDS
+    )
     # CDP reconnect backoff (F-RL18)
     max_cdp_reconnects: int = 50
     cdp_reconnect_delay_s: float = 2.0

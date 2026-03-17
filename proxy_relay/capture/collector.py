@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 from proxy_relay.capture.models import CaptureConfig
 from proxy_relay.logger import get_logger
@@ -108,7 +109,7 @@ class CaptureCollector:
             "method": request.get("method", ""),
             "headers": _headers_to_str(headers),
             "post_data": _truncate(
-                request.get("postData", "") or "",
+                self._redact_post_body(request.get("postData", "") or ""),
                 self._config.max_body_bytes,
             ),
             "initiator": initiator_type,
@@ -300,6 +301,57 @@ class CaptureCollector:
         self._enqueue("page.navigated", payload)
 
     # ── Instance helpers ──────────────────────────────────────────────────
+
+    def _redact_post_body(self, post_data: str) -> str:
+        """Redact sensitive field values from a POST body (JSON or URL-encoded).
+
+        Tries JSON parse first, then URL-encoded form parse.  Matching keys
+        (case-insensitive) have their values replaced with ``"[REDACTED]"``.
+        Returns the original string unchanged if neither format parses or if
+        no sensitive fields are found.
+
+        Args:
+            post_data: Raw POST body string from CDP ``postData``.
+
+        Returns:
+            Redacted POST body string, or the original if no match.
+        """
+        if not post_data or not self._config.redact_post_fields:
+            return post_data
+
+        # Try JSON object
+        try:
+            data = json.loads(post_data)
+            if isinstance(data, dict):
+                redacted = False
+                for key in list(data.keys()):
+                    if key.lower() in self._config.redact_post_fields:
+                        data[key] = "[REDACTED]"
+                        redacted = True
+                if redacted:
+                    return json.dumps(data)
+            return post_data
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Try URL-encoded form data (application/x-www-form-urlencoded)
+        try:
+            pairs = parse_qsl(post_data, keep_blank_values=True)
+            if pairs:
+                redacted = False
+                new_pairs: list[tuple[str, str]] = []
+                for key, value in pairs:
+                    if key.lower() in self._config.redact_post_fields:
+                        new_pairs.append((key, "[REDACTED]"))
+                        redacted = True
+                    else:
+                        new_pairs.append((key, value))
+                if redacted:
+                    return urlencode(new_pairs)
+        except Exception:
+            pass
+
+        return post_data
 
     def _redact_headers(self, headers: dict[str, str]) -> dict[str, str]:
         """Redact sensitive header values, preserving the first 10 characters.
