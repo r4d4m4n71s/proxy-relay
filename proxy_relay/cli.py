@@ -287,7 +287,7 @@ def _cmd_start(args: argparse.Namespace) -> int:
 
     host = config.server.host if args.host is None else args.host
     port = config.server.port if args.port is None else args.port
-    profile_name = args.profile or config.proxy_st_profile
+    profile_name = args.profile or config.default_proxy_profile
 
     # Check for existing instance of this profile
     pid = read_pid(pid_path_for(profile_name))
@@ -604,7 +604,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
 
-    profile_name = args.profile or config.proxy_st_profile
+    profile_name = args.profile or config.default_proxy_profile
     log_level = getattr(args, "log_level", None) or config.log_level
     configure_logging(log_level)
 

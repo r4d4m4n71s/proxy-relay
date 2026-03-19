@@ -16,6 +16,7 @@ Complete reference for every configuration parameter, CLI flag, and internal con
 - [CLI Commands](#cli-commands)
 - [Chromium Flags (browse command)](#chromium-flags-browse-command)
 - [Concepts](#concepts)
+- [Python Library API](#python-library-api)
 
 ---
 
@@ -34,7 +35,7 @@ Override with `--config /path/to/file.toml` on `start` or `browse` commands.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `log_level` | string | `"INFO"` | Logging verbosity. Controls what gets printed to the console and log output. |
-| `proxy_st_profile` | string | `"browse"` | Name of the proxy-st profile to use for upstream SOCKS5 connections. Must match a profile defined in proxy-st's config. |
+| `default_proxy_profile` | string | `"browse"` | Name of the proxy-st profile to use for upstream SOCKS5 connections. Must match a profile defined in proxy-st's config. |
 
 ### `log_level`
 
@@ -47,13 +48,13 @@ Controls the minimum severity of log messages printed to the console.
 | `"WARNING"` | Only problems: slow connections, timezone mismatches, rotation triggers, proxy deaths. |
 | `"ERROR"` | Only failures: fatal errors, unrecoverable tunnel failures, process crashes. |
 
-### `proxy_st_profile`
+### `default_proxy_profile`
 
 The profile name from your proxy-st configuration (`~/.config/proxy-st/config.toml`). Each profile defines a country, session lifetime, and connection parameters.
 
 ```toml
 # Use the "us-browse" profile from proxy-st
-proxy_st_profile = "us-browse"
+default_proxy_profile = "us-browse"
 ```
 
 ---
@@ -232,10 +233,15 @@ rotate_interval_min = 30
 |-------|---------|
 | `""` | Auto-detect (default) |
 | `"chromium"` | Chromium |
+| `"chromium-stable"` | Chromium (stable channel) |
 | `"google-chrome"` | Google Chrome |
+| `"google-chrome-stable"` | Google Chrome (stable channel) |
 | `"brave-browser"` | Brave Browser |
+| `"brave-browser-stable"` | Brave Browser (stable channel) |
 | `"microsoft-edge"` | Microsoft Edge |
+| `"microsoft-edge-stable"` | Microsoft Edge (stable channel) |
 | `"vivaldi"` | Vivaldi |
+| `"vivaldi-stable"` | Vivaldi (stable channel) |
 | `"opera"` | Opera |
 | `"/usr/bin/chromium"` | Explicit path (skips PATH search) |
 
@@ -374,7 +380,7 @@ Launch Chromium through the proxy relay. **Automatically starts a server if none
 
 **Profile resolution** (first match wins):
 1. `--profile NAME` CLI flag → `NAME`
-2. `proxy_st_profile` in config → config value
+2. `default_proxy_profile` in config → config value
 3. Default → `"browse"`
 
 **Browser resolution** (first match wins):
@@ -634,3 +640,52 @@ proxy-relay browse --profile us-browse
 ```
 
 Each instance writes its own `{profile}.pid` and `{profile}.status.json` file, and each browser session gets its own isolated Chromium profile directory.
+
+---
+
+## Python Library API
+
+proxy-relay exposes a public Python API through `proxy_relay.__init__`. All symbols below are importable directly from the package:
+
+```python
+import proxy_relay
+# or
+from proxy_relay import ProxyServer, RelayConfig, open_browser, ...
+```
+
+### Version
+
+| Symbol | Type | Description |
+|--------|------|-------------|
+| `__version__` | `str` | Package version string (e.g. `"0.1.0"`). |
+
+### Core API
+
+| Symbol | Signature | Description |
+|--------|-----------|-------------|
+| `RelayConfig` | `class` | Root configuration dataclass. Load from TOML via `RelayConfig.load(path)`. |
+| `ProxyServer` | `class` | Local HTTP CONNECT proxy server. Constructed with `host`, `port`, `upstream_manager`, `monitor_config`. Managed via `await server.start()` / `await server.stop()`. |
+| `UpstreamManager` | `class` | Wraps proxy-st to resolve SOCKS5 upstream URLs. `get_upstream()` returns an `UpstreamInfo`, `rotate()` forces a new session. |
+| `run_server` | `async def run_server(host, port, profile_name, on_ready, monitor_config) -> None` | Convenience coroutine: creates `UpstreamManager` + `ProxyServer` and runs until shutdown. |
+
+### Browser API
+
+| Symbol | Signature | Description |
+|--------|-----------|-------------|
+| `BrowserHandle` | `dataclass` | Handle to a launched browser process. Fields: `process` (Popen), `profile_dir` (Path), `chromium_path` (Path). |
+| `BrowseError` | `exception` | Raised by browser API functions on failure (no Chromium found, launch failed, health check failed). |
+| `can_launch_browser` | `() -> bool` | Returns `False` in headless/SSH environments or when no Chromium binary is found. |
+| `find_chromium` | `() -> Path` | Locate the first Chromium-based browser on the system. Raises `BrowseError` if none found. |
+| `open_browser` | `(url, *, proxy_host, proxy_port, profile_name, chromium_path, timezone) -> BrowserHandle` | Launch Chromium configured for proxied browsing. Caller manages lifecycle via `close_browser`. |
+| `open_browser_tab` | `(handle, url) -> None` | Open a URL in a running Chromium session (new tab via same `--user-data-dir`). |
+| `close_browser` | `(handle) -> None` | Terminate the browser (SIGTERM then SIGKILL). Never raises. |
+| `auto_start_server` | `(profile_name, host, config_path, log_level) -> Popen` | Start a proxy-relay server subprocess with `--port 0` (OS assigns port). |
+| `wait_for_server_ready` | `(profile_name, server_proc, timeout) -> tuple[str, int]` | Poll the status file until the server writes its actual host/port, or raise `BrowseError` on timeout. |
+| `auto_stop_server` | `(server_proc, profile_name) -> None` | Stop an auto-started server subprocess gracefully (SIGTERM then SIGKILL). |
+| `health_check` | `(proxy_host, proxy_port) -> str` | Call the server's `/__health` endpoint; returns the exit IP. Raises `BrowseError` on failure. |
+
+### Timezone API
+
+| Symbol | Signature | Description |
+|--------|-----------|-------------|
+| `get_timezone_for_country` | `(country_code: str) -> str \| None` | Return a representative IANA timezone string for an ISO alpha-2 country code (case-insensitive). Returns `None` for unknown codes. Cached via `lru_cache`. |

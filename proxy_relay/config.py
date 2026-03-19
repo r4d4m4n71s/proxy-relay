@@ -23,7 +23,7 @@ _DEFAULT_CONFIG: str = """\
 # log_level = "INFO"
 
 # proxy-st profile name to use for upstream SOCKS5 connections.
-proxy_st_profile = "browse"
+default_proxy_profile = "browse"
 
 [server]
 host = "127.0.0.1"
@@ -88,7 +88,7 @@ class RelayConfig:
     """Root configuration for proxy-relay."""
 
     log_level: str = "INFO"
-    proxy_st_profile: str = "browse"
+    default_proxy_profile: str = "browse"
     server: ServerConfig = field(default_factory=ServerConfig)
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     anti_leak: AntiLeakConfig = field(default_factory=AntiLeakConfig)
@@ -185,9 +185,9 @@ def _parse_config(data: dict) -> RelayConfig:
             f"{', '.join(sorted(_VALID_LOG_LEVELS))}"
         )
 
-    proxy_st_profile = str(data.get("proxy_st_profile", "browse"))
-    if not proxy_st_profile:
-        raise ConfigError("proxy_st_profile must not be empty")
+    default_proxy_profile = str(data.get("default_proxy_profile", "browse"))
+    if not default_proxy_profile:
+        raise ConfigError("default_proxy_profile must not be empty")
 
     # [server]
     server_data = data.get("server", {})
@@ -285,7 +285,7 @@ def _parse_config(data: dict) -> RelayConfig:
 
     config = RelayConfig(
         log_level=log_level,
-        proxy_st_profile=proxy_st_profile,
+        default_proxy_profile=default_proxy_profile,
         server=server,
         monitor=monitor,
         anti_leak=anti_leak,
@@ -295,7 +295,7 @@ def _parse_config(data: dict) -> RelayConfig:
 
     log.debug(
         "Config loaded: profile=%s, bind=%s:%d",
-        proxy_st_profile,
+        default_proxy_profile,
         host,
         port,
     )

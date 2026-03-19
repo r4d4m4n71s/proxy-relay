@@ -86,6 +86,18 @@ flowchart TD
         CHROME_EXIT -->|relay died| AUTO_STOP
     end
 
+    subgraph Maintenance["Profile Maintenance"]
+        CLI_CLEAN["proxy-relay profile-clean --profile NAME"]:::entry
+        FIND_STALE["Find PID + status files<br/>for profile"]
+        IS_RUNNING{"Process running?"}
+        SKIP["Skip — server is live"]:::success
+        REMOVE["Remove stale files"]:::config
+
+        CLI_CLEAN --> FIND_STALE --> IS_RUNNING
+        IS_RUNNING -->|yes| SKIP
+        IS_RUNNING -->|no| REMOVE
+    end
+
     ACCEPT --> CLIENT
     AUTO_ROT -.-> BUILD_URL
     HC -.-> HEALTH

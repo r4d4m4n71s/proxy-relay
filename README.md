@@ -58,6 +58,8 @@ See [`docs/reference.md`](docs/reference.md) for the full configuration referenc
 | `proxy-relay status` | Show server status and connection stats |
 | `proxy-relay rotate` | Trigger upstream proxy rotation |
 | `proxy-relay browse` | Launch Chromium through the proxy (auto-starts server if needed); add `--capture` to record CDP traffic |
+| `proxy-relay profile-clean` | Remove PID/status files for stopped instances |
+| `proxy-relay analyze` | Analyze captured CDP traffic from the SQLite database |
 | `proxy-relay --version` | Show version |
 
 All commands accept `--profile` to target a specific proxy-st profile (default: `browse`). Multiple profiles can run simultaneously as separate server instances.

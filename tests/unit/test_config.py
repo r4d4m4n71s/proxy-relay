@@ -16,7 +16,7 @@ class TestRelayConfigLoad:
         path = tmp_path / "config.toml"
         path.write_text(
             'log_level = "DEBUG"\n'
-            'proxy_st_profile = "stealth"\n'
+            'default_proxy_profile = "stealth"\n'
             '\n'
             '[server]\n'
             'host = "0.0.0.0"\n'
@@ -34,7 +34,7 @@ class TestRelayConfigLoad:
         cfg = RelayConfig.load(path)
 
         assert cfg.log_level == "DEBUG"
-        assert cfg.proxy_st_profile == "stealth"
+        assert cfg.default_proxy_profile == "stealth"
         assert cfg.server.host == "0.0.0.0"
         assert cfg.server.port == 9090
         assert cfg.monitor.slow_threshold_ms == 3000.0
@@ -49,7 +49,7 @@ class TestRelayConfigLoad:
         cfg = RelayConfig.load(minimal_toml)
 
         assert cfg.log_level == "INFO"
-        assert cfg.proxy_st_profile == "browse"
+        assert cfg.default_proxy_profile == "browse"
         assert cfg.server.host == "127.0.0.1"
         assert cfg.server.port == 8080
         assert cfg.monitor.enabled is True

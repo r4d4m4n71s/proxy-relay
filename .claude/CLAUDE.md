@@ -2,7 +2,7 @@
 
 ## Project
 Local HTTP/CONNECT proxy that tunnels traffic through upstream SOCKS5 proxies via proxy-st (IProyal).
-Stack: Python >=3.12, asyncio, python-socks, proxy-st, tomlkit.
+Stack: Python >=3.12, asyncio, python-socks, proxy-st.
 Repo: https://github.com/r4d4m4n71s/proxy-relay (private)
 All persistent state: `~/.config/proxy-relay/` (config.toml, PID files, status files, browser profiles)
 
@@ -52,7 +52,7 @@ All persistent state: `~/.config/proxy-relay/` (config.toml, PID files, status f
 ## Module map
 ```
 proxy_relay/
-    __init__.py         Lazy public API: ProxyServer, RelayConfig, UpstreamManager, run_server
+    __init__.py         Lazy public API: __version__, ProxyServer, RelayConfig, UpstreamManager, run_server; Browser API: BrowserHandle, BrowseError, can_launch_browser, open_browser, open_browser_tab, close_browser, find_chromium, auto_start_server, wait_for_server_ready, auto_stop_server, health_check; Timezone: get_timezone_for_country
     __main__.py         python -m proxy_relay entry point
     cli.py              CLI: start, stop, status, rotate, browse subcommands (argparse)
     config.py           TOML config loader, RelayConfig + section dataclasses

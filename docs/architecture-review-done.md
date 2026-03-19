@@ -2,6 +2,22 @@
 
 ---
 
+## S83 — 2026-03-18 (docs sweep + F21 rename)
+
+7 items resolved.
+
+| ID | Finding | Resolution |
+|----|---------|-----------|
+| F21 | `proxy_st_profile` config key leaks provider name | Hard rename to `default_proxy_profile` in `config.py`, `cli.py`, `docs/reference.md`, `tests/unit/test_config.py` |
+| D01 | README CLI table omits `profile-clean` and `analyze` commands | Added both rows to CLI reference table in `README.md` |
+| D03 | CLAUDE.md `__init__.py` description omits Browser API + Timezone exports | Updated module map entry to list all 17 exported symbols |
+| D04 | No Python library usage documentation | Added "Python Library API" section to `docs/reference.md` with tables for all 17 public symbols |
+| D05 | Chromium candidate list in docs incomplete (missing -stable variants) | Added `-stable` variants for chromium, google-chrome, brave-browser, microsoft-edge, vivaldi |
+| D08 | Flow diagram omits `profile-clean` | Added "Profile Maintenance" subgraph to `docs/diagrams/proxy-relay-flow.md` |
+| D11 | `__version__` not mentioned in CLAUDE.md | Added to `__init__.py` description in module map |
+
+---
+
 ## S82 — 2026-03-18 (code fixes + stale verification)
 
 16 items resolved: 4 fixed in S82, 12 verified already fixed (stale).
