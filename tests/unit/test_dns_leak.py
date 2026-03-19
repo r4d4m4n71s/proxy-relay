@@ -13,6 +13,9 @@ from pathlib import Path
 import pytest
 
 DANGEROUS_NAMES = {"getaddrinfo", "gethostbyname", "gethostbyname_ex", "getfqdn"}
+# browse.py is intentionally excluded: it drives a local Chromium subprocess
+# (no network I/O handled by proxy_relay itself) and legitimately uses
+# socket.gethostbyname for health-check connectivity tests against localhost.
 DATA_PATH_MODULES = ("tunnel", "forwarder", "handler")
 
 

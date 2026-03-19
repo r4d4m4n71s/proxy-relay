@@ -174,7 +174,7 @@ class UpstreamManager:
         with self._lock:
             self._current = new_info
 
-        log.info(
+        log.debug(
             "Upstream resolved: %s:%d (country=%s)",
             new_info.host,
             new_info.port,

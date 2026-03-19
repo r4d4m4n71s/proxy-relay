@@ -1642,6 +1642,18 @@ class TestOpenBrowserTab:
         assert "--user-data-dir=/tmp/profile" in cmd
         assert "https://new-url.com" in cmd
 
+    def test_oserror_does_not_propagate(self):
+        """OSError from Popen (e.g. binary not found) is caught and logged, not raised."""
+        from proxy_relay.browse import BrowserHandle, open_browser_tab
+
+        handle = BrowserHandle(
+            process=MagicMock(),
+            profile_dir=Path("/tmp/profile"),
+            chromium_path=Path("/usr/bin/chromium"),
+        )
+        with patch("subprocess.Popen", side_effect=OSError("exec failed")):
+            open_browser_tab(handle, "https://example.com")  # must not raise
+
 
 class TestCloseBrowser:
     """Tests for close_browser() — terminate browser process."""
