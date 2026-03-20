@@ -26,6 +26,7 @@ log = get_logger(__name__)
 
 _COOKIES_DB_PATH = "Default/Cookies"
 _WARMUP_META_FILE = ".warmup-meta.json"
+_POISONED_FILE = ".poisoned"
 _CHROMIUM_EPOCH_OFFSET = 11_644_473_600  # seconds between 1601-01-01 and 1970-01-01
 
 _TIDAL_DOMAINS = frozenset({"tidal.com", "listen.tidal.com", "login.tidal.com"})
@@ -208,11 +209,41 @@ class ProfileNotCorrupted:
         )
 
 
+class ProfileNotPoisoned:
+    """Rule 3: Verify the profile has not been flagged as DataDome-poisoned.
+
+    Written by warmup when the datadome cookie was not acquired after timeout
+    AND a direct TIDAL check confirms the IP is blocked.
+    Remediation: DELETE_PROFILE — start completely fresh on a new IP.
+    """
+
+    name = "profile_not_poisoned"
+    remediation = Remediation.DELETE_PROFILE
+
+    def evaluate(self, ctx: BrowseContext) -> RuleResult:
+        poisoned_path = ctx.profile_dir / _POISONED_FILE
+        if poisoned_path.exists():
+            return RuleResult(
+                passed=False,
+                skipped=False,
+                rule_name=self.name,
+                reason="profile flagged as DataDome-poisoned",
+                remediation=Remediation.DELETE_PROFILE,
+            )
+        return RuleResult(
+            passed=True,
+            skipped=False,
+            rule_name=self.name,
+            reason="profile not poisoned",
+            remediation=Remediation.NONE,
+        )
+
+
 class DatadomeCookieExists:
     """Rule 3: Verify the datadome cookie is present for .tidal.com."""
 
     name = "datadome_cookie_exists"
-    remediation = Remediation.DELETE_PROFILE
+    remediation = Remediation.DELETE_COOKIE
 
     def evaluate(self, ctx: BrowseContext) -> RuleResult:
         cookies_path = ctx.profile_dir / _COOKIES_DB_PATH
@@ -289,127 +320,6 @@ class DatadomeCookieNotExpired:
         )
 
 
-class IPMatchesCookie:
-    """Rule 5: Verify the current exit IP matches the IP used during warmup.
-
-    When this rule fails, the cookie is also invalid (issued for old IP),
-    so DELETE_COOKIE remediation must also run alongside ROTATE_IP.
-    """
-
-    name = "ip_matches_cookie"
-    remediation = Remediation.ROTATE_IP
-
-    def evaluate(self, ctx: BrowseContext) -> RuleResult:
-        meta_path = ctx.profile_dir / _WARMUP_META_FILE
-        meta = read_warmup_meta(ctx.profile_dir)
-        if meta is None:
-            return RuleResult(
-                passed=True,
-                skipped=True,
-                rule_name=self.name,
-                reason="no warmup metadata",
-                remediation=Remediation.NONE,
-            )
-        issued_ip = meta.get("issued_ip", "")
-        if issued_ip == ctx.exit_ip:
-            return RuleResult(
-                passed=True,
-                skipped=False,
-                rule_name=self.name,
-                reason=f"exit IP matches ({ctx.exit_ip})",
-                remediation=Remediation.NONE,
-            )
-        return RuleResult(
-            passed=False,
-            skipped=False,
-            rule_name=self.name,
-            reason=f"was {issued_ip}, now {ctx.exit_ip}",
-            remediation=self.remediation,
-        )
-
-
-class TIDALSessionExists:
-    """Rule 6: Check whether the profile has visited TIDAL (info only).
-
-    Failure has NONE remediation — this is informational only.
-    """
-
-    name = "tidal_session_exists"
-    remediation = Remediation.NONE
-
-    def evaluate(self, ctx: BrowseContext) -> RuleResult:
-        conn = _open_cookies_db(ctx.profile_dir)
-        if conn is None:
-            return RuleResult(
-                passed=False,
-                skipped=False,
-                rule_name=self.name,
-                reason="profile has not visited TIDAL",
-                remediation=Remediation.NONE,
-            )
-        try:
-            cur = conn.execute(
-                "SELECT 1 FROM cookies "
-                "WHERE host_key LIKE '%.tidal.com%' AND name = 'app_lang' LIMIT 1"
-            )
-            row = cur.fetchone()
-        except Exception:
-            row = None
-        finally:
-            conn.close()
-
-        if row is not None:
-            return RuleResult(
-                passed=True,
-                skipped=False,
-                rule_name=self.name,
-                reason="profile has visited TIDAL",
-                remediation=Remediation.NONE,
-            )
-        return RuleResult(
-            passed=False,
-            skipped=False,
-            rule_name=self.name,
-            reason="profile has not visited TIDAL",
-            remediation=Remediation.NONE,
-        )
-
-
-class LanguageConsistentWithCountry:
-    """Rule 7: Verify the warmup country matches the current proxy country."""
-
-    name = "language_consistent"
-    remediation = Remediation.DELETE_PROFILE
-
-    def evaluate(self, ctx: BrowseContext) -> RuleResult:
-        meta = read_warmup_meta(ctx.profile_dir)
-        if meta is None:
-            return RuleResult(
-                passed=True,
-                skipped=True,
-                rule_name=self.name,
-                reason="no warmup metadata",
-                remediation=Remediation.NONE,
-            )
-        issued_country = meta.get("issued_country", "").lower()
-        current_country = ctx.country.lower()
-        if issued_country == current_country:
-            return RuleResult(
-                passed=True,
-                skipped=False,
-                rule_name=self.name,
-                reason=f"country consistent ({current_country.upper()})",
-                remediation=Remediation.NONE,
-            )
-        return RuleResult(
-            passed=False,
-            skipped=False,
-            rule_name=self.name,
-            reason=f"issued for {issued_country.upper()}, now {current_country.upper()}",
-            remediation=self.remediation,
-        )
-
-
 # ---------------------------------------------------------------------------
 # Rule registry
 # ---------------------------------------------------------------------------
@@ -460,33 +370,23 @@ class RuleRegistry:
         results: list[RuleResult] = []
         profile_ok = True
         cookies_db_ok = True
-        cookies_db_present = True  # False when DB simply doesn't exist (fresh profile)
         datadome_ok = True
-        meta_exists = (ctx.profile_dir / _WARMUP_META_FILE).exists()
+        poisoned = False
 
         for rule in self._rules:
             # Determine skip conditions per rule
             if rule.name == "profile_not_corrupted" and not profile_ok:
                 results.append(_skip(rule))
                 continue
-            if rule.name == "datadome_cookie_exists" and not profile_ok:
+            if rule.name == "profile_not_poisoned" and not profile_ok:
                 results.append(_skip(rule))
                 continue
-            # tidal_session_exists: skip if profile missing OR no Cookies DB at all
-            if rule.name == "tidal_session_exists" and (
-                not profile_ok or not cookies_db_present
-            ):
+            if rule.name == "datadome_cookie_exists" and (not profile_ok or poisoned):
                 results.append(_skip(rule))
                 continue
             if rule.name == "datadome_cookie_not_expired" and (
-                not datadome_ok or not cookies_db_ok
+                not datadome_ok or not cookies_db_ok or poisoned
             ):
-                results.append(_skip(rule))
-                continue
-            if rule.name == "ip_matches_cookie" and (not datadome_ok or not meta_exists):
-                results.append(_skip(rule))
-                continue
-            if rule.name == "language_consistent" and not meta_exists:
                 results.append(_skip(rule))
                 continue
 
@@ -496,12 +396,10 @@ class RuleRegistry:
             # Track state for skip logic
             if rule.name == "profile_exists" and not result.passed:
                 profile_ok = False
-            if rule.name == "profile_not_corrupted":
-                if result.skipped:
-                    # DB doesn't exist — no Cookies file at all
-                    cookies_db_present = False
-                elif not result.passed:
-                    cookies_db_ok = False
+            if rule.name == "profile_not_poisoned" and not result.passed:
+                poisoned = True
+            if rule.name == "profile_not_corrupted" and not result.passed and not result.skipped:
+                cookies_db_ok = False
             if rule.name == "datadome_cookie_exists" and not result.passed and not result.skipped:
                 datadome_ok = False
 
@@ -509,15 +407,13 @@ class RuleRegistry:
 
 
 def default_registry() -> RuleRegistry:
-    """Build and return the standard rule registry with all 7 rules."""
+    """Build and return the standard rule registry with all 5 rules."""
     reg = RuleRegistry()
     reg.add(ProfileExists())
     reg.add(ProfileNotCorrupted())
+    reg.add(ProfileNotPoisoned())
     reg.add(DatadomeCookieExists())
     reg.add(DatadomeCookieNotExpired())
-    reg.add(IPMatchesCookie())
-    reg.add(TIDALSessionExists())
-    reg.add(LanguageConsistentWithCountry())
     return reg
 
 
@@ -551,6 +447,19 @@ def write_warmup_meta(
     path = profile_dir / _WARMUP_META_FILE
     path.write_text(json.dumps(meta, indent=2))
     log.debug("Wrote warmup meta to %s", path)
+
+
+def write_poisoned_marker(profile_dir: Path) -> None:
+    """Write .poisoned sentinel file to profile_dir.
+
+    Called by warmup when the datadome cookie was not acquired and a direct
+    TIDAL check confirms the IP is blocked.
+    """
+    try:
+        (profile_dir / _POISONED_FILE).touch()
+        log.info("Poisoned marker written to %s", profile_dir)
+    except Exception as exc:
+        log.warning("Failed to write poisoned marker: %s", exc)
 
 
 def read_warmup_meta(profile_dir: Path) -> dict | None:
@@ -615,18 +524,6 @@ def print_validation_report(
     if profile_str.startswith(str(home)):
         profile_str = "~" + profile_str[len(str(home)):]
 
-    # Find TIDAL session result
-    tidal_result = next((r for r in results if r.rule_name == "tidal_session_exists"), None)
-    if tidal_result is None:
-        tidal_line = "TIDAL     : - unknown"
-    elif tidal_result.skipped:
-        tidal_line = "TIDAL     : - unknown"
-    elif tidal_result.passed:
-        email = ctx.account_email or "(account unknown)"
-        tidal_line = f"TIDAL     : \u2713 visited \u2014 {email}"
-    else:
-        tidal_line = "TIDAL     : \u2717 never visited"
-
     print("\u2554" + "\u2550" * 62 + "\u2557")
     print("\u2551  proxy-relay browse \u2014 profile validation" + " " * 21 + "\u2551")
     print("\u255a" + "\u2550" * 62 + "\u255d")
@@ -638,7 +535,8 @@ def print_validation_report(
     if ctx.timezone:
         print(f"  Timezone  : {ctx.timezone}")
     print(f"  Directory : {profile_str}/")
-    print(f"  {tidal_line}")
+    if ctx.account_email:
+        print(f"  Account   : {ctx.account_email}")
     print()
     print("  Rules:")
 
@@ -667,10 +565,10 @@ def print_validation_report(
             seen.add(r.remediation)
             ordered_remeds.append(r.remediation)
             needs_warmup = True
-        # IP mismatch also invalidates cookie
-        if r.rule_name == "ip_matches_cookie" and Remediation.DELETE_COOKIE not in seen:
-            seen.add(Remediation.DELETE_COOKIE)
-            ordered_remeds.append(Remediation.DELETE_COOKIE)
+        # Poisoned profile also needs IP rotation
+        if r.rule_name == "profile_not_poisoned" and Remediation.ROTATE_IP not in seen:
+            seen.add(Remediation.ROTATE_IP)
+            ordered_remeds.append(Remediation.ROTATE_IP)
 
     print()
     print("  Remediations:")
@@ -684,6 +582,7 @@ def print_validation_report(
 
     if needs_warmup:
         print("    \u2192 Run warm-up on listen.tidal.com to acquire new datadome cookie")
+        print("      (move the mouse and scroll when the browser opens)")
 
 
 # ---------------------------------------------------------------------------
@@ -719,10 +618,10 @@ def execute_remediations(
         if r.remediation not in seen and r.remediation != Remediation.NONE:
             seen.add(r.remediation)
             ordered.append(r.remediation)
-        # IP mismatch also invalidates cookie
-        if r.rule_name == "ip_matches_cookie" and Remediation.DELETE_COOKIE not in seen:
-            seen.add(Remediation.DELETE_COOKIE)
-            ordered.append(Remediation.DELETE_COOKIE)
+        # Poisoned profile also needs IP rotation
+        if r.rule_name == "profile_not_poisoned" and Remediation.ROTATE_IP not in seen:
+            seen.add(Remediation.ROTATE_IP)
+            ordered.append(Remediation.ROTATE_IP)
 
     from proxy_relay import browse as _browse
 

@@ -10,8 +10,10 @@ from pathlib import Path
 
 from proxy_relay import __version__
 from proxy_relay import browse as _browse
+from proxy_relay import telemetry as _telemetry
 from proxy_relay.config import MonitorConfig, RelayConfig
 from proxy_relay.profile_rules import (
+    Remediation,
     BrowseContext,
     default_registry,
     execute_remediations,
@@ -176,7 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile",
         type=str,
         default=None,
-        help="proxy-st profile name (overrides config, selects browser workspace)",
+        help="proxy-st profile name (overrides config file setting)",
     )
     browse_parser.add_argument(
         "--no-rotate",
@@ -221,17 +223,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="URL",
         help="URL to open on browser launch (default: browser new-tab page).",
-    )
-    browse_parser.add_argument(
-        "--workspace",
-        type=str,
-        default="default",
-        metavar="WORKSPACE",
-        help=(
-            "Browser workspace identifier. Combined with --profile to form the "
-            "profile directory {profile}+{workspace}. Allows multiple browser "
-            "identities sharing the same proxy-st profile. Default: 'default'."
-        ),
     )
     browse_parser.add_argument(
         "--account",
@@ -714,8 +705,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
             return 1
 
         # 5. Profile dir, timezone, and language
-        workspace = getattr(args, "workspace", "default") or "default"
-        profile_dir_key = f"{profile_name}+{workspace}"
+        profile_dir_key = profile_name
         profile_dir = _browse.get_profile_dir(profile_dir_key, chromium_path=chromium_path)
 
         country = (status_data or {}).get("country", "")
@@ -739,6 +729,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
 
         if is_tidal_url(start_url_for_check):
             try:
+                run_id = _telemetry.new_run_id()
                 ctx = BrowseContext(
                     profile_dir=profile_dir,
                     exit_ip=exit_ip,
@@ -747,8 +738,34 @@ def _cmd_browse(args: argparse.Namespace) -> int:
                     timezone=proxy_tz,
                     account_email=account_email,
                 )
+
+                _telemetry.emit(
+                    "browse.start",
+                    profile=profile_name,
+                    run_id=run_id,
+                    event_type="start",
+                    exit_ip=exit_ip,
+                    country=country,
+                    lang=proxy_lang or "",
+                    timezone=proxy_tz or "",
+                    url=start_url_for_check or "",
+                )
+
                 results = default_registry().evaluate_all(ctx)
                 failed = [r for r in results if not r.passed and not r.skipped]
+
+                for r in results:
+                    _telemetry.emit(
+                        "rule.evaluated",
+                        profile=profile_name,
+                        run_id=run_id,
+                        rule_name=r.rule_name,
+                        passed=int(r.passed),
+                        skipped=int(r.skipped),
+                        reason=r.reason,
+                        remediation=r.remediation.value,
+                        exit_ip=exit_ip,
+                    )
 
                 print_validation_report(ctx, results, profile_name)
 
@@ -759,26 +776,58 @@ def _cmd_browse(args: argparse.Namespace) -> int:
                         print("\nCancelled.")
                         return 1
 
+                    old_ip = ctx.exit_ip
                     ctx = execute_remediations(
                         failed, ctx, relay_pid, profile_name, host, port
                     )
-                    # Run warmup to acquire new datadome cookie
-                    from proxy_relay.warmup import WarmupSession
 
-                    warmup = WarmupSession(
-                        profile_name=profile_name,
-                        workspace=workspace,
-                        host=host,
-                        port=port,
-                        chromium_path=chromium_path,
-                        lang=proxy_lang,
-                        timezone=proxy_tz,
-                        account_email=account_email,
-                        no_verify=True,  # scripted — browse cmd will open browser after
+                    # Emit one remediation event per unique action applied
+                    seen_actions: set[str] = set()
+                    for r in failed:
+                        if r.remediation != Remediation.NONE and r.remediation.value not in seen_actions:
+                            seen_actions.add(r.remediation.value)
+                            _telemetry.emit(
+                                "remediation.executed",
+                                profile=profile_name,
+                                run_id=run_id,
+                                action=r.remediation.value,
+                                old_ip=old_ip,
+                                new_ip=ctx.exit_ip,
+                            )
+                    # profile_not_poisoned also triggers ROTATE_IP
+                    if any(r.rule_name == "profile_not_poisoned" for r in failed):
+                        if "rotate_ip" not in seen_actions:
+                            _telemetry.emit(
+                                "remediation.executed",
+                                profile=profile_name,
+                                run_id=run_id,
+                                action="rotate_ip",
+                                old_ip=old_ip,
+                                new_ip=ctx.exit_ip,
+                            )
+
+                    # Only run warmup when datadome trust needs re-establishing
+                    # (rules with Remediation.NONE are informational — no warmup needed)
+                    needs_warmup = any(
+                        r.remediation != Remediation.NONE for r in failed
                     )
-                    warmup_rc = warmup.run()
-                    if warmup_rc != 0:
-                        print("Warm-up failed — launching browser anyway.", file=sys.stderr)
+                    if needs_warmup:
+                        from proxy_relay.warmup import WarmupSession
+
+                        warmup = WarmupSession(
+                            profile_name=profile_name,
+                            host=host,
+                            port=port,
+                            chromium_path=chromium_path,
+                            lang=proxy_lang,
+                            timezone=proxy_tz,
+                            account_email=account_email,
+                        )
+                        print("\nStarting warm-up — move the mouse and scroll in the browser.")
+                        print("Close the browser when done to continue.\n")
+                        warmup_rc = warmup.run()
+                        if warmup_rc != 0:
+                            print("Warm-up failed — launching browser anyway.", file=sys.stderr)
             except Exception as exc:
                 log.warning("Profile validation failed (non-fatal): %s", exc)
                 print(f"Warning: profile validation error — {exc}", file=sys.stderr)
@@ -845,7 +894,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
         else:
             print("Auto-rotation disabled")
 
-        print(f"Launching Chromium (profile: {profile_name}, workspace: {workspace}, data: {profile_dir})...")
+        print(f"Launching Chromium (profile: {profile_name}, data: {profile_dir})...")
         return supervisor.run()
 
     finally:

@@ -2,24 +2,25 @@
 
 Automates the following sequence:
   A. Start proxy relay server (auto-start if not running), resolve lang/tz/country
-  B. Launch Chromium with CDP pointed directly at listen.tidal.com
-  C. Enable Network, poll getAllCookies for datadome, write warmup-meta, disconnect CDP
+  B. Launch Chromium (no CDP) pointed directly at listen.tidal.com
+  C. Poll Chromium Cookies SQLite for datadome cookie, write warmup-meta
   D. Hand the browser off to the user
   E. Wait for browser exit, then clean up
+
+No CDP/remote-debugging-port is used — the browser runs completely clean to
+avoid DataDome detecting the automation signal.
 
 Both interactive (default) and ``--no-verify`` (scripted) modes are supported.
 """
 from __future__ import annotations
 
-import asyncio
-import signal
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
 
 from proxy_relay import browse as _browse
-from proxy_relay.capture import _find_free_port
+from proxy_relay import telemetry as _telemetry
 from proxy_relay.exceptions import BrowseError
 from proxy_relay.lang import get_language_for_country
 from proxy_relay.logger import get_logger
@@ -30,6 +31,7 @@ from proxy_relay.pidfile import (
     read_status,
     status_path_for,
 )
+from proxy_relay.profile_rules import write_warmup_meta
 from proxy_relay.tz import get_timezone_for_country
 
 log = get_logger(__name__)
@@ -38,13 +40,42 @@ _DATADOME_POLL_INTERVAL = 2.0  # seconds between cookie polls
 _BROWSER_POLL_INTERVAL = 1.0   # seconds between browser-alive checks
 
 
+def _check_tidal_blocked(proxy_host: str, proxy_port: int) -> bool:
+    """Return True if TIDAL is actively blocked by DataDome on this IP.
+
+    Makes a direct HTTP request through the relay proxy to listen.tidal.com
+    and checks for DataDome's block signature in the final URL or headers.
+    """
+    import requests
+
+    proxies = {"https": f"http://{proxy_host}:{proxy_port}",
+               "http":  f"http://{proxy_host}:{proxy_port}"}
+    try:
+        resp = requests.get(
+            "https://listen.tidal.com/",
+            proxies=proxies,
+            timeout=15,
+            allow_redirects=True,
+        )
+        final_url = resp.url.lower()
+        blocked = (
+            "datadome" in final_url
+            or "captcha-delivery" in final_url
+            or "interstitial" in final_url
+            or resp.status_code == 403
+        )
+        log.debug("TIDAL block check: url=%s status=%s blocked=%s", resp.url, resp.status_code, blocked)
+        return blocked
+    except Exception as exc:
+        log.debug("TIDAL block check failed (network error): %s", exc)
+        return False
+
+
 class WarmupSession:
     """Orchestrate a DataDome trust warm-up for a given proxy profile.
 
     Args:
         profile_name: proxy-st profile name (e.g. ``"medellin"``).
-        workspace: Browser workspace identifier — combined with profile_name
-            to form the browser profile directory ``{profile}+{workspace}``.
         timeout: Seconds to wait for the ``datadome`` cookie (phase C).
         host: Relay server bind address.
         port: Relay server port (0 = OS-assigned, resolved after start).
@@ -54,13 +85,13 @@ class WarmupSession:
         no_verify: If True, run in scripted mode (no Enter prompts, kill browser on done).
         config_path: Optional path to proxy-relay config file.
         log_level: Log level for auto-started server subprocess.
+        account_email: Optional account email to record in warmup metadata.
     """
 
     def __init__(
         self,
         *,
         profile_name: str,
-        workspace: str = "default",
         timeout: float = 120.0,
         host: str = "127.0.0.1",
         port: int = 0,
@@ -73,7 +104,6 @@ class WarmupSession:
         account_email: str | None = None,
     ) -> None:
         self.profile_name = profile_name
-        self.workspace = workspace
         self.timeout = timeout
         self.host = host
         self.port = port
@@ -89,6 +119,7 @@ class WarmupSession:
         self._server_proc: subprocess.Popen[bytes] | None = None
         self._auto_started: bool = False
         self._browser_handle: _browse.BrowserHandle | None = None
+        self._run_id: str = _telemetry.new_run_id()
 
     # ── Public entry point ─────────────────────────────────────────────────
 
@@ -102,11 +133,27 @@ class WarmupSession:
     # ── Phase orchestration ────────────────────────────────────────────────
 
     def _run_sync(self) -> int:
+        import sys
+
+        _telemetry.emit(
+            "warmup.start",
+            profile=self.profile_name,
+            run_id=self._run_id,
+            event_type="start",
+            exit_ip="",
+            country="",
+            lang=self.lang or "",
+            timezone=self.timezone or "",
+            elapsed_s=0.0,
+            reason="",
+            account_email=self.account_email or "",
+        )
+
         # Phase A — ensure server is running
         try:
             resolved_host, resolved_port = self._ensure_server()
         except BrowseError as exc:
-            print(f"Failed to start proxy relay server: {exc}", file=__import__("sys").stderr)
+            print(f"Failed to start proxy relay server: {exc}", file=sys.stderr)
             return 1
 
         self.host = resolved_host
@@ -127,14 +174,11 @@ class WarmupSession:
             if self.chromium_path is None:
                 self.chromium_path = _browse.find_chromium()
         except BrowseError as exc:
-            print(str(exc), file=__import__("sys").stderr)
+            print(str(exc), file=sys.stderr)
             return 1
 
-        # Allocate CDP port
-        cdp_port = _find_free_port()
-
         # Build profile dir key
-        profile_dir_key = f"{self.profile_name}+{self.workspace}"
+        profile_dir_key = self.profile_name
         profile_dir = _browse.get_profile_dir(profile_dir_key, chromium_path=self.chromium_path)
 
         if self.lang:
@@ -142,9 +186,8 @@ class WarmupSession:
         if self.timezone:
             print(f"Timezone: {self.timezone}")
         print(f"Profile dir: {profile_dir}")
-        print(f"CDP port: {cdp_port}")
 
-        # Phase B — launch Chromium pointed at listen.tidal.com
+        # Phase B — launch Chromium WITHOUT CDP (clean browser, no automation signal)
         try:
             self._browser_handle = _browse.open_browser(
                 "https://listen.tidal.com",
@@ -154,155 +197,155 @@ class WarmupSession:
                 chromium_path=self.chromium_path,
                 timezone=self.timezone,
                 lang=self.lang,
-                cdp_port=cdp_port,
             )
         except BrowseError as exc:
-            print(f"Failed to launch Chromium: {exc}", file=__import__("sys").stderr)
+            print(f"Failed to launch Chromium: {exc}", file=sys.stderr)
             return 1
 
-        print("Chromium launched — connecting CDP...")
+        print("Chromium launched — move the mouse and scroll to build DataDome trust...")
+        print("Polling for datadome cookie in the background...")
 
-        # Phases B+C+D run inside a single asyncio.run() call
+        # Resolve actual exit IP (needed for warmup-meta)
         try:
-            result = asyncio.run(self._run_cdp_phases(cdp_port))
-        except Exception as exc:
-            log.error("CDP phase failed: %s", exc)
-            print(f"Warm-up failed: {exc}", file=__import__("sys").stderr)
-            return 1
+            exit_ip = _browse.health_check(self.host, self.port)
+            log.debug("Warmup exit IP: %s", exit_ip)
+        except Exception:
+            exit_ip = ""
 
+        # Phase C — poll Cookies SQLite (no CDP needed)
+        result = self._poll_for_datadome(profile_dir, exit_ip=exit_ip)
         if result != 0:
             return result
 
-        # Phase D — CDP is disconnected; browser stays open
+        # Phase D — browser stays open, hand off to user
         print("Warm-up complete. Browser is open on listen.tidal.com.")
         print("Log in and close the window when done.")
 
         if self.no_verify:
-            # Scripted mode — kill browser immediately
             if self._browser_handle is not None:
                 _browse.close_browser(self._browser_handle)
             return 0
 
-        # Interactive mode — wait for browser exit or relay death
         return self._wait_for_browser_exit()
 
-    # ── CDP phases (async) ─────────────────────────────────────────────────
+    # ── Cookie polling (SQLite) ────────────────────────────────────────────
 
-    async def _run_cdp_phases(self, cdp_port: int) -> int:
-        """Run DataDome cookie poll (C) and write warmup-meta on success.
+    def _poll_for_datadome(self, profile_dir: Path, *, exit_ip: str = "") -> int:
+        """Poll Chromium's Cookies SQLite until datadome cookie appears or timeout.
 
-        Returns 0 on success, 1 on failure.
+        Returns 0 on success, 1 on timeout or browser exit.
         """
-        from proxy_relay.capture.cdp_client import CdpClient
-        from proxy_relay.exceptions import CaptureError
+        import sys
 
-        cdp = CdpClient()
-        try:
-            await cdp.connect(cdp_port, max_retries=15, retry_delay=1.5)
-        except CaptureError as exc:
-            log.error("CDP connect failed: %s", exc)
-            # Kill browser — don't leave orphaned processes
-            if self._browser_handle is not None:
-                _browse.close_browser(self._browser_handle)
-            raise
-
-        try:
-            # Phase C — poll for datadome cookie (browser already on listen.tidal.com)
-            result = await self._phase_datadome(cdp)
-            if result != 0:
-                return result
-
-            # Phase D — disconnect CDP (security + detection risk)
-            await cdp.close()
-            print("CDP disconnected.")
-            return 0
-
-        except Exception:
-            await cdp.close()
-            raise
-
-    async def _phase_datadome(self, cdp: Any) -> int:
-        """Enable Network and poll for the datadome cookie.
-
-        The browser is already on listen.tidal.com (launched there in Phase B).
-        Writes .warmup-meta.json after the cookie is confirmed.
-
-        Returns 0 on success, 1 on failure/timeout.
-        """
-        from proxy_relay.exceptions import CaptureError
+        cookies_db = profile_dir / "Default" / "Cookies"
+        start = time.monotonic()
+        deadline = start + self.timeout
 
         print(f"\nPolling for datadome cookie (timeout: {self.timeout:.0f}s)...")
-        try:
-            await cdp.send("Network.enable")
-        except CaptureError as exc:
-            log.error("Network.enable failed: %s", exc)
-            print(f"CDP Network.enable failed: {exc}", file=__import__("sys").stderr)
-            return 1
 
-        deadline = asyncio.get_event_loop().time() + self.timeout
-        cookie_found = False
+        while time.monotonic() < deadline:
+            # Check browser still alive
+            if self._browser_handle is not None:
+                if self._browser_handle.process.poll() is not None:
+                    print("Browser exited before datadome cookie was found.", file=sys.stderr)
+                    return 1
 
-        while asyncio.get_event_loop().time() < deadline:
-            try:
-                result = await cdp.send("Network.getAllCookies")
-                cookies = result.get("cookies", [])
-                for c in cookies:
-                    if c.get("name") == "datadome" and "tidal.com" in c.get("domain", ""):
-                        cookie_found = True
-                        break
-            except CaptureError as exc:
-                log.warning("Cookie poll error: %s", exc)
+            if cookies_db.exists():
+                try:
+                    uri = f"file:{cookies_db}?mode=ro&immutable=1"
+                    conn = sqlite3.connect(uri, uri=True)
+                    try:
+                        cur = conn.execute(
+                            "SELECT 1 FROM cookies "
+                            "WHERE name = 'datadome' AND host_key LIKE '%.tidal.com%' "
+                            "LIMIT 1"
+                        )
+                        row = cur.fetchone()
+                    finally:
+                        conn.close()
 
-            if cookie_found:
-                break
+                    if row:
+                        print("datadome cookie found — DataDome trust established.")
+                        self._write_meta(profile_dir, exit_ip=exit_ip)
+                        _telemetry.emit(
+                            "warmup.complete",
+                            profile=self.profile_name,
+                            run_id=self._run_id,
+                            event_type="complete",
+                            exit_ip=exit_ip,
+                            country=self.country,
+                            lang=self.lang or "",
+                            timezone=self.timezone or "",
+                            elapsed_s=round(time.monotonic() - start, 1),
+                            reason="datadome cookie acquired",
+                            account_email=self.account_email or "",
+                        )
+                        return 0
+                except Exception as exc:
+                    log.debug("Cookie poll error: %s", exc)
 
-            await asyncio.sleep(_DATADOME_POLL_INTERVAL)
+            time.sleep(_DATADOME_POLL_INTERVAL)
 
-        if not cookie_found:
-            print(
-                f"\nTimeout: datadome cookie not found after {self.timeout:.0f}s.",
-                file=__import__("sys").stderr,
-            )
-            if self.no_verify:
-                return 1
-            # Interactive: keep browser open for debugging
-            print("Browser remains open for debugging. Close it manually.")
-            return 1
-
-        print("datadome cookie found — DataDome trust established.")
-
-        # Write warmup meta so profile_rules can validate future sessions
-        if self._browser_handle is not None:
-            try:
-                from proxy_relay.profile_rules import write_warmup_meta
-
-                write_warmup_meta(
-                    Path(self._browser_handle.profile_dir),
-                    self.host,
-                    self.country or "",
-                    self.account_email,
+        elapsed = time.monotonic() - start
+        print(
+            f"\nTimeout: datadome cookie not found after {self.timeout:.0f}s.",
+            file=sys.stderr,
+        )
+        poisoned = False
+        if elapsed > 30:
+            log.info("Elapsed %.0fs > 30s — checking if TIDAL is actively blocked...", elapsed)
+            if _check_tidal_blocked(self.host, self.port):
+                print("DataDome block confirmed — marking profile as poisoned.", file=sys.stderr)
+                from proxy_relay.profile_rules import write_poisoned_marker
+                write_poisoned_marker(profile_dir)
+                poisoned = True
+                _telemetry.emit(
+                    "warmup.poisoned",
+                    profile=self.profile_name,
+                    run_id=self._run_id,
+                    event_type="poisoned",
+                    exit_ip=exit_ip,
+                    country=self.country,
+                    lang=self.lang or "",
+                    timezone=self.timezone or "",
+                    elapsed_s=round(elapsed, 1),
+                    reason="DataDome block confirmed",
+                    account_email=self.account_email or "",
                 )
-                log.info("Warmup meta written to profile %s", self._browser_handle.profile_dir)
-            except Exception as exc:
-                log.warning("Failed to write warmup meta: %s", exc)
+            else:
+                log.info("TIDAL block check negative — likely a transient failure, not poisoning")
+        if not poisoned:
+            _telemetry.emit(
+                "warmup.failed",
+                profile=self.profile_name,
+                run_id=self._run_id,
+                event_type="failed",
+                exit_ip=exit_ip,
+                country=self.country,
+                lang=self.lang or "",
+                timezone=self.timezone or "",
+                elapsed_s=round(elapsed, 1),
+                reason="timeout" if elapsed >= self.timeout else "browser exited",
+                account_email=self.account_email or "",
+            )
+        if not self.no_verify:
+            print("Browser remains open for debugging. Close it manually.")
+        return 1
 
-        return 0
+    def _write_meta(self, profile_dir: Path, *, exit_ip: str = "") -> None:
+        """Write .warmup-meta.json after datadome cookie confirmed."""
+        try:
+            write_warmup_meta(
+                profile_dir,
+                exit_ip or self.host,
+                self.country or "",
+                self.account_email,
+            )
+            log.info("Warmup meta written to profile %s", profile_dir)
+        except Exception as exc:
+            log.warning("Failed to write warmup meta: %s", exc)
 
     # ── Helpers ────────────────────────────────────────────────────────────
-
-    async def _js_eval(self, cdp: Any, expression: str) -> Any:
-        """Evaluate a JS expression via Runtime.evaluate and return the value."""
-        from proxy_relay.exceptions import CaptureError
-
-        try:
-            result = await cdp.send(
-                "Runtime.evaluate",
-                {"expression": expression, "returnByValue": True},
-            )
-            return result.get("result", {}).get("value")
-        except CaptureError as exc:
-            log.debug("JS eval failed for %r: %s", expression, exc)
-            return None
 
     def _ensure_server(self) -> tuple[str, int]:
         """Return (host, port) of a running relay server, auto-starting if needed."""
@@ -338,13 +381,11 @@ class WarmupSession:
         relay_pid = read_pid(pid_path_for(self.profile_name))
 
         while True:
-            # Browser exited?
             if self._browser_handle is not None:
                 if self._browser_handle.process.poll() is not None:
                     log.info("Chromium exited")
                     return 0
 
-            # Relay died?
             if relay_pid is not None and not is_process_running(relay_pid):
                 print("\nWarning: proxy relay stopped — browser has no proxy.")
                 return 0
@@ -370,7 +411,6 @@ class WarmupSession:
 def run_warmup(
     profile_name: str,
     *,
-    workspace: str = "default",
     timeout: float = 120.0,
     browser: str | None = None,
     config_path: Path | None = None,
@@ -384,7 +424,6 @@ def run_warmup(
 
     Args:
         profile_name: proxy-st profile name.
-        workspace: Browser workspace identifier (combined with profile to form dir key).
         timeout: Seconds to wait for the datadome cookie.
         browser: Override Chromium binary path.
         config_path: Optional path to proxy-relay config file.
@@ -407,7 +446,6 @@ def run_warmup(
 
     session = WarmupSession(
         profile_name=profile_name,
-        workspace=workspace,
         timeout=timeout,
         chromium_path=chromium_path,
         lang=lang,

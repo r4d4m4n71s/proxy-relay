@@ -1,9 +1,10 @@
 """Tests for proxy_relay.warmup — DataDome trust warm-up."""
 from __future__ import annotations
 
-import asyncio
+import sqlite3
+import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 
 class TestWarmupSessionDefaults:
@@ -14,7 +15,6 @@ class TestWarmupSessionDefaults:
 
         s = WarmupSession(profile_name="medellin")
         assert s.profile_name == "medellin"
-        assert s.workspace == "default"
         assert s.timeout == 120.0
         assert s.no_verify is False
         assert s.lang is None
@@ -25,13 +25,11 @@ class TestWarmupSessionDefaults:
 
         s = WarmupSession(
             profile_name="test",
-            workspace="auth",
             timeout=60.0,
             lang="es-419,es",
             timezone="America/Bogota",
             no_verify=True,
         )
-        assert s.workspace == "auth"
         assert s.timeout == 60.0
         assert s.lang == "es-419,es"
         assert s.timezone == "America/Bogota"
@@ -106,79 +104,117 @@ class TestWarmupSessionEnsureServer:
         assert s._server_proc is mock_proc
 
 
-class TestWarmupCDPPhases:
-    """Tests for async CDP phases."""
+def _make_cookies_db(path: Path, *, with_datadome: bool = True) -> None:
+    """Create a minimal Chromium Cookies SQLite DB at path/Default/Cookies."""
+    cookies_dir = path / "Default"
+    cookies_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(cookies_dir / "Cookies")
+    conn.execute(
+        "CREATE TABLE cookies ("
+        "host_key TEXT, name TEXT, value TEXT, "
+        "expires_utc INTEGER, is_secure INTEGER)"
+    )
+    if with_datadome:
+        conn.execute(
+            "INSERT INTO cookies VALUES (?, ?, ?, ?, ?)",
+            (".tidal.com", "datadome", "abc123", 0, 1),
+        )
+    conn.commit()
+    conn.close()
 
-    def _make_cdp(self, *, datadome_cookie=True, language="es-419", timezone="America/Bogota"):
-        """Build a mock CdpClient for warmup tests."""
-        cdp = MagicMock()
-        cdp.connect = AsyncMock()
-        cdp.close = AsyncMock()
 
-        cookies = []
-        if datadome_cookie:
-            cookies = [{"name": "datadome", "domain": ".tidal.com", "value": "abc123"}]
+class TestPollForDatadome:
+    """Tests for WarmupSession._poll_for_datadome()."""
 
-        async def send(method, params=None):
-            if method == "Runtime.evaluate":
-                expr = (params or {}).get("expression", "")
-                if "navigator.language" in expr:
-                    return {"result": {"value": language}}
-                if "timeZone" in expr:
-                    return {"result": {"value": timezone}}
-                if "document.readyState" in expr:
-                    return {"result": {"value": "complete"}}
-            if method == "Network.getAllCookies":
-                return {"cookies": cookies}
-            return {}
-
-        cdp.send = send
-        return cdp
-
-    def test_phase_datadome_success(self):
+    def test_cookie_found_returns_0(self, tmp_path):
         from proxy_relay.warmup import WarmupSession
 
+        _make_cookies_db(tmp_path, with_datadome=True)
         s = WarmupSession(profile_name="medellin", timeout=10.0)
-        cdp = self._make_cdp(datadome_cookie=True)
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        s._browser_handle = MagicMock()
+        s._browser_handle.process.poll.return_value = None
 
-        result = asyncio.run(s._phase_datadome(cdp))
+        with patch.object(s, "_write_meta"):
+            result = s._poll_for_datadome(tmp_path)
         assert result == 0
 
-    def test_phase_datadome_timeout_no_cookie(self, capsys):
+    def test_no_cookie_timeout_returns_1(self, tmp_path, capsys):
         from proxy_relay.warmup import WarmupSession
 
-        s = WarmupSession(profile_name="medellin", timeout=0.01, no_verify=True)
-        cdp = self._make_cdp(datadome_cookie=False)
+        _make_cookies_db(tmp_path, with_datadome=False)
+        s = WarmupSession(profile_name="medellin", timeout=0.05, no_verify=True)
+        s._browser_handle = MagicMock()
+        s._browser_handle.process.poll.return_value = None
 
-        result = asyncio.run(s._phase_datadome(cdp))
+        with patch("proxy_relay.warmup._DATADOME_POLL_INTERVAL", 0.01):
+            result = s._poll_for_datadome(tmp_path)
         assert result == 1
         assert "timeout" in capsys.readouterr().err.lower()
 
-    def test_phase_datadome_writes_warmup_meta(self, tmp_path):
-        """After datadome cookie is found, write_warmup_meta is called."""
+    def test_browser_exit_returns_1(self, tmp_path, capsys):
         from proxy_relay.warmup import WarmupSession
-        from proxy_relay.browse import BrowserHandle
 
+        # No cookies DB — browser "exits" before it's created
         s = WarmupSession(profile_name="medellin", timeout=10.0)
+        s._browser_handle = MagicMock()
+        s._browser_handle.process.poll.return_value = 1  # browser exited
 
-        # Point the session at tmp_path so we can check the meta file
-        mock_proc = MagicMock()
-        mock_proc.poll.return_value = None
-        s._browser_handle = BrowserHandle(
-            process=mock_proc,
-            profile_dir=tmp_path,
-            chromium_path=Path("/usr/bin/chromium"),
-        )
+        result = s._poll_for_datadome(tmp_path)
+        assert result == 1
+        assert "exited" in capsys.readouterr().err.lower()
 
-        cdp = self._make_cdp(datadome_cookie=True)
+    def test_cookie_found_writes_warmup_meta(self, tmp_path):
+        from proxy_relay.warmup import WarmupSession
 
-        with patch("proxy_relay.profile_rules.write_warmup_meta") as mock_write:
-            asyncio.run(s._phase_datadome(cdp))
+        _make_cookies_db(tmp_path, with_datadome=True)
+        s = WarmupSession(profile_name="medellin", timeout=10.0, account_email="a@b.com")
+        s._browser_handle = MagicMock()
+        s._browser_handle.process.poll.return_value = None
 
-        mock_write.assert_called_once()
-        call_kwargs = mock_write.call_args
-        # First positional arg should be the profile_dir
-        assert call_kwargs.args[0] == tmp_path or call_kwargs.kwargs.get("profile_dir") == tmp_path
+        with patch("proxy_relay.warmup.WarmupSession._write_meta") as mock_write:
+            s._poll_for_datadome(tmp_path)
+
+        mock_write.assert_called_once_with(tmp_path, exit_ip="")
+
+    def test_missing_db_does_not_crash(self, tmp_path, capsys):
+        """No Cookies DB yet — should keep polling until timeout."""
+        from proxy_relay.warmup import WarmupSession
+
+        s = WarmupSession(profile_name="medellin", timeout=0.05, no_verify=True)
+        s._browser_handle = MagicMock()
+        s._browser_handle.process.poll.return_value = None
+
+        with patch("proxy_relay.warmup._DATADOME_POLL_INTERVAL", 0.01):
+            result = s._poll_for_datadome(tmp_path)
+        assert result == 1  # timeout, not crash
+
+
+class TestWriteMeta:
+    """Tests for WarmupSession._write_meta()."""
+
+    def test_calls_write_warmup_meta(self, tmp_path):
+        from proxy_relay.warmup import WarmupSession
+
+        s = WarmupSession(profile_name="medellin", account_email="user@example.com")
+        s.host = "127.0.0.1"
+        s.country = "co"
+
+        with patch("proxy_relay.warmup.write_warmup_meta") as mock_write:
+            s._write_meta(tmp_path)
+
+        mock_write.assert_called_once_with(tmp_path, "127.0.0.1", "co", "user@example.com")
+
+    def test_write_failure_does_not_raise(self, tmp_path):
+        from proxy_relay.warmup import WarmupSession
+
+        s = WarmupSession(profile_name="medellin")
+        s.host = "127.0.0.1"
+        s.country = "co"
+
+        with patch("proxy_relay.warmup.write_warmup_meta", side_effect=OSError("disk full")):
+            s._write_meta(tmp_path)  # must not raise
 
 
 class TestWarmupCleanup:

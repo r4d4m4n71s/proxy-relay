@@ -183,11 +183,11 @@ class TestRuleResult:
             skipped=False,
             rule_name="datadome_cookie_exists",
             reason="no datadome cookie found",
-            remediation=Remediation.DELETE_PROFILE,
+            remediation=Remediation.DELETE_COOKIE,
         )
         assert r.passed is False
         assert r.skipped is False
-        assert r.remediation == Remediation.DELETE_PROFILE
+        assert r.remediation == Remediation.DELETE_COOKIE
 
 
 # ===========================================================================
@@ -481,191 +481,19 @@ class TestDatadomeCookieNotExpiredRule:
 
 
 # ===========================================================================
-# TestIPMatchesCookieRule
-# ===========================================================================
-
-
-class TestIPMatchesCookieRule:
-    """ip_matches_cookie rule — issued_ip in .warmup-meta.json vs exit_ip."""
-
-    def test_matching_ip_passes(self, tmp_path):
-        from proxy_relay.profile_rules import BrowseContext, default_registry
-
-        _make_cookies_db(tmp_path, [_datadome_cookie()])
-        _make_meta(tmp_path, exit_ip="1.2.3.4", country="CO")
-        (tmp_path / "marker.txt").write_text("x")
-        ctx = BrowseContext(profile_dir=tmp_path, exit_ip="1.2.3.4", country="CO")
-        registry = default_registry()
-        results = {r.rule_name: r for r in registry.evaluate_all(ctx)}
-
-        assert results["ip_matches_cookie"].passed is True
-        assert results["ip_matches_cookie"].skipped is False
-
-    def test_different_ip_fails(self, tmp_path):
-        from proxy_relay.profile_rules import BrowseContext, default_registry
-
-        _make_cookies_db(tmp_path, [_datadome_cookie()])
-        _make_meta(tmp_path, exit_ip="9.8.7.6", country="CO")
-        (tmp_path / "marker.txt").write_text("x")
-        ctx = BrowseContext(profile_dir=tmp_path, exit_ip="1.2.3.4", country="CO")
-        registry = default_registry()
-        results = {r.rule_name: r for r in registry.evaluate_all(ctx)}
-
-        assert results["ip_matches_cookie"].passed is False
-        assert results["ip_matches_cookie"].skipped is False
-
-    def test_no_meta_file_skipped(self, tmp_path):
-        from proxy_relay.profile_rules import BrowseContext, default_registry
-
-        _make_cookies_db(tmp_path, [_datadome_cookie()])
-        (tmp_path / "marker.txt").write_text("x")
-        # No .warmup-meta.json written
-        ctx = BrowseContext(profile_dir=tmp_path, exit_ip="1.2.3.4", country="CO")
-        registry = default_registry()
-        results = {r.rule_name: r for r in registry.evaluate_all(ctx)}
-
-        assert results["ip_matches_cookie"].skipped is True
-
-    def test_remediation_is_rotate_ip(self, tmp_path):
-        from proxy_relay.profile_rules import BrowseContext, Remediation, default_registry
-
-        _make_cookies_db(tmp_path, [_datadome_cookie()])
-        _make_meta(tmp_path, exit_ip="9.8.7.6", country="CO")
-        (tmp_path / "marker.txt").write_text("x")
-        ctx = BrowseContext(profile_dir=tmp_path, exit_ip="1.2.3.4", country="CO")
-        registry = default_registry()
-        results = {r.rule_name: r for r in registry.evaluate_all(ctx)}
-
-        assert results["ip_matches_cookie"].remediation == Remediation.ROTATE_IP
-
-
-# ===========================================================================
-# TestTIDALSessionExistsRule
-# ===========================================================================
-
-
-class TestTIDALSessionExistsRule:
-    """tidal_session_exists rule — app_lang cookie on tidal.com."""
-
-    def test_app_lang_cookie_present_passes(self, tmp_path):
-        from proxy_relay.profile_rules import BrowseContext, default_registry
-
-        _make_cookies_db(tmp_path, [_datadome_cookie(), _app_lang_cookie()])
-        _make_meta(tmp_path, exit_ip="1.2.3.4", country="CO")
-        (tmp_path / "marker.txt").write_text("x")
-        ctx = BrowseContext(profile_dir=tmp_path, exit_ip="1.2.3.4", country="CO")
-        registry = default_registry()
-        results = {r.rule_name: r for r in registry.evaluate_all(ctx)}
-
-        assert results["tidal_session_exists"].passed is True
-        assert results["tidal_session_exists"].skipped is False
-
-    def test_no_app_lang_fails(self, tmp_path):
-        from proxy_relay.profile_rules import BrowseContext, default_registry
-
-        # datadome present but no app_lang
-        _make_cookies_db(tmp_path, [_datadome_cookie(), _other_cookie()])
-        _make_meta(tmp_path, exit_ip="1.2.3.4", country="CO")
-        (tmp_path / "marker.txt").write_text("x")
-        ctx = BrowseContext(profile_dir=tmp_path, exit_ip="1.2.3.4", country="CO")
-        registry = default_registry()
-        results = {r.rule_name: r for r in registry.evaluate_all(ctx)}
-
-        assert results["tidal_session_exists"].passed is False
-        assert results["tidal_session_exists"].skipped is False
-
-    def test_remediation_is_none(self, tmp_path):
-        from proxy_relay.profile_rules import BrowseContext, Remediation, default_registry
-
-        _make_cookies_db(tmp_path, [_datadome_cookie(), _other_cookie()])
-        _make_meta(tmp_path, exit_ip="1.2.3.4", country="CO")
-        (tmp_path / "marker.txt").write_text("x")
-        ctx = BrowseContext(profile_dir=tmp_path, exit_ip="1.2.3.4", country="CO")
-        registry = default_registry()
-        results = {r.rule_name: r for r in registry.evaluate_all(ctx)}
-
-        assert results["tidal_session_exists"].remediation == Remediation.NONE
-
-
-# ===========================================================================
-# TestLanguageConsistentRule
-# ===========================================================================
-
-
-class TestLanguageConsistentRule:
-    """language_consistent rule — issued_country in meta matches ctx.country."""
-
-    def test_matching_country_passes(self, tmp_path):
-        from proxy_relay.profile_rules import BrowseContext, default_registry
-
-        _make_cookies_db(tmp_path, [_datadome_cookie()])
-        _make_meta(tmp_path, exit_ip="1.2.3.4", country="CO")
-        (tmp_path / "marker.txt").write_text("x")
-        ctx = BrowseContext(profile_dir=tmp_path, exit_ip="1.2.3.4", country="CO")
-        registry = default_registry()
-        results = {r.rule_name: r for r in registry.evaluate_all(ctx)}
-
-        assert results["language_consistent"].passed is True
-        assert results["language_consistent"].skipped is False
-
-    def test_different_country_fails(self, tmp_path):
-        from proxy_relay.profile_rules import BrowseContext, default_registry
-
-        _make_cookies_db(tmp_path, [_datadome_cookie()])
-        _make_meta(tmp_path, exit_ip="1.2.3.4", country="DE")
-        (tmp_path / "marker.txt").write_text("x")
-        ctx = BrowseContext(profile_dir=tmp_path, exit_ip="1.2.3.4", country="CO")
-        registry = default_registry()
-        results = {r.rule_name: r for r in registry.evaluate_all(ctx)}
-
-        assert results["language_consistent"].passed is False
-        assert results["language_consistent"].skipped is False
-
-    def test_no_meta_skipped(self, tmp_path):
-        from proxy_relay.profile_rules import BrowseContext, default_registry
-
-        _make_cookies_db(tmp_path, [_datadome_cookie()])
-        (tmp_path / "marker.txt").write_text("x")
-        # No .warmup-meta.json written
-        ctx = BrowseContext(profile_dir=tmp_path, exit_ip="1.2.3.4", country="CO")
-        registry = default_registry()
-        results = {r.rule_name: r for r in registry.evaluate_all(ctx)}
-
-        assert results["language_consistent"].skipped is True
-
-    def test_case_insensitive(self, tmp_path):
-        from proxy_relay.profile_rules import BrowseContext, default_registry
-
-        # Meta written with lowercase country; ctx uses uppercase — should still pass
-        _make_cookies_db(tmp_path, [_datadome_cookie()])
-        _make_meta(tmp_path, exit_ip="1.2.3.4", country="co")
-        (tmp_path / "marker.txt").write_text("x")
-        ctx = BrowseContext(profile_dir=tmp_path, exit_ip="1.2.3.4", country="CO")
-        registry = default_registry()
-        results = {r.rule_name: r for r in registry.evaluate_all(ctx)}
-
-        assert results["language_consistent"].passed is True
-
-
-# ===========================================================================
-# TestRuleRegistry
-# ===========================================================================
 
 
 class TestRuleRegistry:
     """RuleRegistry — add / remove / evaluate_all mechanics."""
 
-    def test_default_registry_has_7_rules(self):
+    def test_default_registry_has_5_rules(self):
         from proxy_relay.profile_rules import default_registry
 
         registry = default_registry()
-        # We evaluate on a non-existent path so most rules are skipped,
-        # but the registry still contains exactly 7 rules.
-        # Access rule names by evaluating on a missing dir.
         from proxy_relay.profile_rules import BrowseContext
         ctx = BrowseContext(profile_dir=Path("/nonexistent_profile_12345"), exit_ip="1.2.3.4", country="CO")
         results = registry.evaluate_all(ctx)
-        assert len(results) == 7
+        assert len(results) == 5
 
     def test_add_rule(self):
         from proxy_relay.profile_rules import BrowseContext, Remediation, RuleResult, default_registry
@@ -687,7 +515,7 @@ class TestRuleRegistry:
         registry.add(_DummyRule())
         ctx = BrowseContext(profile_dir=Path("/nonexistent_12345"), exit_ip="1.2.3.4", country="CO")
         results = registry.evaluate_all(ctx)
-        assert len(results) == 8
+        assert len(results) == 6
         names = {r.rule_name for r in results}
         assert "dummy_rule" in names
 
@@ -698,7 +526,7 @@ class TestRuleRegistry:
         registry.remove("profile_exists")
         ctx = BrowseContext(profile_dir=Path("/nonexistent_12345"), exit_ip="1.2.3.4", country="CO")
         results = registry.evaluate_all(ctx)
-        assert len(results) == 6
+        assert len(results) == 4
         names = {r.rule_name for r in results}
         assert "profile_exists" not in names
 
@@ -710,7 +538,7 @@ class TestRuleRegistry:
         registry.remove("this_rule_does_not_exist")
         ctx = BrowseContext(profile_dir=Path("/nonexistent_12345"), exit_ip="1.2.3.4", country="CO")
         results = registry.evaluate_all(ctx)
-        assert len(results) == 7  # unchanged
+        assert len(results) == 5  # unchanged
 
 
 # ===========================================================================
@@ -738,9 +566,6 @@ class TestSkipLogic:
             "profile_not_corrupted",
             "datadome_cookie_exists",
             "datadome_cookie_not_expired",
-            "ip_matches_cookie",
-            "tidal_session_exists",
-            "language_consistent",
         ]
         for name in other_rules:
             assert results[name].skipped is True, f"Expected {name!r} to be skipped"
@@ -758,8 +583,6 @@ class TestSkipLogic:
         assert results["profile_not_corrupted"].skipped is True
         assert results["datadome_cookie_exists"].skipped is True
         assert results["datadome_cookie_not_expired"].skipped is True
-        assert results["ip_matches_cookie"].skipped is True
-        assert results["tidal_session_exists"].skipped is True
 
     def test_no_datadome_cookie_skips_expiry_and_ip(self, tmp_path):
         from proxy_relay.profile_rules import BrowseContext, default_registry
@@ -775,20 +598,19 @@ class TestSkipLogic:
         assert results["datadome_cookie_exists"].passed is False
         assert results["datadome_cookie_exists"].skipped is False
         assert results["datadome_cookie_not_expired"].skipped is True
-        assert results["ip_matches_cookie"].skipped is True
 
-    def test_no_meta_skips_ip_and_language(self, tmp_path):
+    def test_all_rules_pass_with_valid_cookie(self, tmp_path):
         from proxy_relay.profile_rules import BrowseContext, default_registry
 
-        # Full valid DB with datadome, but no .warmup-meta.json
+        # Full valid DB with datadome, no poisoned marker
         _make_cookies_db(tmp_path, [_datadome_cookie()])
         (tmp_path / "marker.txt").write_text("x")
         ctx = BrowseContext(profile_dir=tmp_path, exit_ip="1.2.3.4", country="CO")
         registry = default_registry()
         results = {r.rule_name: r for r in registry.evaluate_all(ctx)}
 
-        assert results["ip_matches_cookie"].skipped is True
-        assert results["language_consistent"].skipped is True
+        assert results["datadome_cookie_not_expired"].passed is True
+        assert results["profile_not_poisoned"].passed is True
 
 
 # ===========================================================================
@@ -808,11 +630,9 @@ class TestPrintValidationReport:
         names = [
             "profile_exists",
             "profile_not_corrupted",
+            "profile_not_poisoned",
             "datadome_cookie_exists",
             "datadome_cookie_not_expired",
-            "ip_matches_cookie",
-            "tidal_session_exists",
-            "language_consistent",
         ]
         return [
             RuleResult(
@@ -832,11 +652,9 @@ class TestPrintValidationReport:
         names = [
             "profile_exists",
             "profile_not_corrupted",
+            "profile_not_poisoned",
             "datadome_cookie_exists",
             "datadome_cookie_not_expired",
-            "ip_matches_cookie",
-            "tidal_session_exists",
-            "language_consistent",
         ]
         results = []
         for n in names:
@@ -867,11 +685,9 @@ class TestPrintValidationReport:
         names = [
             "profile_exists",
             "profile_not_corrupted",
+            "profile_not_poisoned",
             "datadome_cookie_exists",
             "datadome_cookie_not_expired",
-            "ip_matches_cookie",
-            "tidal_session_exists",
-            "language_consistent",
         ]
         results = []
         for n in names:
@@ -930,7 +746,7 @@ class TestPrintValidationReport:
         from proxy_relay.profile_rules import print_validation_report
 
         ctx = self._ctx(tmp_path)
-        results = self._one_skipped("ip_matches_cookie")
+        results = self._one_skipped("datadome_cookie_not_expired")
         print_validation_report(ctx, results, profile_name="medellin")
         out = capsys.readouterr().out
         # Skipped rules are typically shown with a dash or "skip" marker
@@ -956,28 +772,13 @@ class TestPrintValidationReport:
         # Some word indicating TIDAL was visited (e.g. "yes", "tidal", "visited")
         assert "tidal" in out.lower() or "visited" in out.lower() or "yes" in out.lower()
 
-    def test_tidal_not_visited_shown(self, tmp_path, capsys):
-        from proxy_relay.profile_rules import print_validation_report
-
-        ctx = self._ctx(tmp_path)
-        results = self._one_failure("tidal_session_exists", remediation=None)
-        from proxy_relay.profile_rules import Remediation
-        # Override remediation to NONE for this test
-        for r in results:
-            if r.rule_name == "tidal_session_exists":
-                r.__class__  # just access to confirm it's a RuleResult
-        print_validation_report(ctx, results, profile_name="medellin")
-        out = capsys.readouterr().out
-        # Some indication that TIDAL was not visited ("no", "not visited", "false")
-        assert "no" in out.lower() or "not" in out.lower() or "false" in out.lower()
-
     def test_account_email_shown_when_present(self, tmp_path, capsys):
         from proxy_relay.profile_rules import print_validation_report
 
         ctx = self._ctx(tmp_path, account_email="alice@example.com")
         print_validation_report(ctx, self._all_pass_results(), profile_name="medellin")
         out = capsys.readouterr().out
-        assert "alice@example.com" in out
+        assert "alice@example.com" in out  # shown in Account line
 
     def test_remediation_section_shown_on_failure(self, tmp_path, capsys):
         from proxy_relay.profile_rules import print_validation_report

@@ -557,22 +557,6 @@ class TestCmdStatusAll:
         assert "no proxy-relay instances" in captured.out.lower()
 
 
-# ---------------------------------------------------------------------------
-# browse --workspace and warmup subcommand
-# ---------------------------------------------------------------------------
 
-
-class TestBrowseWorkspace:
-    """Tests for --workspace flag on the browse subcommand."""
-
-    def test_browse_has_workspace_arg_default(self):
-        parser = build_parser()
-        args = parser.parse_args(["browse", "--profile", "medellin"])
-        assert args.workspace == "default"
-
-    def test_browse_workspace_custom(self):
-        parser = build_parser()
-        args = parser.parse_args(["browse", "--profile", "medellin", "--workspace", "auth"])
-        assert args.workspace == "auth"
 
 
