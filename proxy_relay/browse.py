@@ -58,6 +58,7 @@ BROWSER_PROFILES_DIR: Path = CONFIG_DIR / "browser-profiles"
 
 # Snap Chromium can only write to ~/snap/chromium/common/ due to sandbox restrictions.
 _SNAP_PROFILES_DIR: Path = Path.home() / "snap" / "chromium" / "common" / "proxy-relay-profiles"
+_SNAP_CHROMIUM_DIR: Path = Path.home() / "snap" / "chromium" / "common" / "chromium"
 
 
 # ---------------------------------------------------------------------------
@@ -476,12 +477,48 @@ def get_profile_dir(profile_name: str, chromium_path: Path | None = None) -> Pat
     profile_dir.mkdir(parents=True, exist_ok=True)
     log.debug("Browser profile directory: %s", profile_dir)
 
-    # Create a convenience symlink at the non-Snap location so users can
-    # find profiles under ~/.config/proxy-relay/browser-profiles/<name>.
     if base == _SNAP_PROFILES_DIR:
+        _seed_widevine(profile_dir)
+        # Create a convenience symlink at the non-Snap location so users can
+        # find profiles under ~/.config/proxy-relay/browser-profiles/<name>.
         _create_profile_symlink(profile_name, profile_dir)
 
     return profile_dir
+
+
+def _seed_widevine(profile_dir: Path) -> None:
+    """Copy WidevineCdm from the main Snap Chromium profile into a new profile.
+
+    Widevine is required for TIDAL's web player (DRM-protected streams).
+    Without it, the browser needs a restart after enabling protected content
+    settings before Widevine activates.  Seeding it at profile creation time
+    avoids that manual step.
+
+    The source is ``~/snap/chromium/common/chromium/WidevineCdm/``.  If that
+    is absent (e.g. Widevine was never installed on this machine), falls back
+    to any sibling proxy-relay profile that already has it.
+    """
+    target = profile_dir / "WidevineCdm"
+    if target.exists():
+        return
+
+    source = _SNAP_CHROMIUM_DIR / "WidevineCdm"
+    if not source.exists():
+        # Fallback: borrow from an existing proxy-relay profile
+        for sibling in _SNAP_PROFILES_DIR.iterdir():
+            candidate = sibling / "WidevineCdm"
+            if candidate.exists() and sibling != profile_dir:
+                source = candidate
+                break
+
+    try:
+        if source.exists():
+            shutil.copytree(source, target)
+            log.debug("Seeded WidevineCdm from %s → %s", source, target)
+        else:
+            log.debug("WidevineCdm source not found — skipping seed for %s", profile_dir)
+    except Exception as exc:
+        log.debug("WidevineCdm seed failed (non-fatal): %s", exc)
 
 
 def _cleanup_ghost_profile(profile_name: str) -> None:
