@@ -91,7 +91,7 @@ async def handle_connection(
                 monitor=monitor,
             )
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         log.warning("Request timeout from %s", peer_str)
         if monitor is not None:
             await monitor.record_error(ConnectionOutcome.TIMEOUT, peer_str, "request timeout")

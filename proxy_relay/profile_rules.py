@@ -12,6 +12,7 @@ import signal
 import sqlite3
 import time
 from dataclasses import dataclass, field
+from datetime import UTC
 from enum import Enum
 from pathlib import Path
 from typing import Protocol
@@ -308,9 +309,9 @@ class DatadomeCookieNotExpired:
                 reason="cookie is valid (not expired)",
                 remediation=Remediation.NONE,
             )
-        from datetime import datetime, timezone as _tz
+        from datetime import datetime
 
-        exp_str = datetime.fromtimestamp(unix_ts, tz=_tz.utc).strftime("%Y-%m-%d %H:%M")
+        exp_str = datetime.fromtimestamp(unix_ts, tz=UTC).strftime("%Y-%m-%d %H:%M")
         return RuleResult(
             passed=False,
             skipped=False,
@@ -342,11 +343,11 @@ class RuleRegistry:
 
     _rules: list[Rule] = field(default_factory=list)
 
-    def add(self, rule: Rule) -> "RuleRegistry":
+    def add(self, rule: Rule) -> RuleRegistry:
         self._rules.append(rule)
         return self
 
-    def remove(self, rule_name: str) -> "RuleRegistry":
+    def remove(self, rule_name: str) -> RuleRegistry:
         """Remove a rule by name. No-op if the rule is not present.
 
         Args:
@@ -436,7 +437,7 @@ def write_warmup_meta(
         country: ISO alpha-2 country code of the proxy.
         account_email: Optional account email to record.
     """
-    from datetime import datetime, UTC
+    from datetime import UTC, datetime
 
     meta = {
         "issued_ip": exit_ip,
