@@ -1,5 +1,30 @@
 # Session Notes
 
+## 2026-03-19 — Warmup SQLite rewrite, profile validation, telemetry
+
+**Branch:** `main`
+
+### Accomplished
+| File/Area | Change |
+|-----------|--------|
+| `proxy_relay/warmup.py` | CDP removed; SQLite cookie polling; exit IP via health_check(); emit warmup telemetry events |
+| `proxy_relay/profile_rules.py` | 5 rules (removed `ip_matches_cookie` — not IP-bound); `ProfileNotPoisoned` + `write_poisoned_marker()`; fixed remediation values |
+| `proxy_relay/telemetry.py` | New: lazy BackgroundWriter → `telemetry.db`; 4 tables; `emit()` no-op when telemetry_monitor absent |
+| `proxy_relay/cli.py` | Removed `--workspace`; telemetry wiring (browse.start, rule.evaluated, remediation.executed) |
+| `tests/unit/test_*` | Updated rule counts (6→5), removed TestIPMatchesCookieRule, added TestPollForDatadome |
+
+**Test count:** 729 tests, 0 failures.
+
+### Current state
+- Warmup runs clean (no CDP, no automation signal to DataDome)
+- Profile validation: 5 rules, telemetry written on every browse session start
+- `~/.config/proxy-relay/telemetry.db` written when telemetry_monitor installed
+
+### Next steps
+1. Deploy to pipx + smoke test telemetry.db
+
+---
+
 ## 2026-03-18 — S83: docs sweep + F21 rename
 
 **Branch:** `main`

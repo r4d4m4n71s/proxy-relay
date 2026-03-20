@@ -7,7 +7,7 @@ Repo: https://github.com/r4d4m4n71s/proxy-relay (private)
 All persistent state: `~/.config/proxy-relay/` (config.toml, PID files, status files, browser profiles)
 
 ## Project status
-**650 tests on `main`** | 23 production modules, 26 test files. S81 complete: F-RL28 capture POST body redaction. S80-proxy: F-RL13–27 (15 items) capture lifecycle + report quality + status/lifecycle. CDP capture subpackage (7 modules, ~250 tests) — session_id UUID, DB rotation, purge, POST body redaction, configurable CDP backoff.
+**729 tests on `main`** | 27 production modules, 26 test files. S81 complete: F-RL28 capture POST body redaction. Warmup rewrite: SQLite cookie polling (no CDP), 5-rule profile validation, optional telemetry to ~/.config/proxy-relay/telemetry.db.
 
 ### Async I/O refactor (S63 — C4-17)
 4 blocking I/O paths in `server.py` are now wrapped with `asyncio.to_thread()`:
@@ -67,7 +67,11 @@ proxy_relay/
     sanitizer.py        Header sanitization: strip X-Forwarded-For, Via, Proxy-Authorization, etc.
     pidfile.py          PID/status file ops: profile-scoped .pid and .status.json
     tz.py               Timezone mismatch detection + country-to-IANA mapping (40+ countries)
+    lang.py             BCP 47 Accept-Language mapping for 40+ countries (mirrors tz.py)
     browse.py           Chromium discovery, health check client, BrowseSupervisor, auto-start/stop server
+    profile_rules.py    5-rule profile validator: exists/not-corrupted/not-poisoned/datadome-exists/not-expired; BrowseContext, RuleRegistry, execute_remediations, print_validation_report
+    warmup.py           DataDome trust warm-up: SQLite cookie polling (no CDP), WarmupSession, run_warmup()
+    telemetry.py        Optional telemetry sink → telemetry.db: warmup/browse/rule/remediation events (no-op if telemetry_monitor absent)
     capture/
         __init__.py     CaptureSession orchestrator, DB rotation, purge, session UUID, configurable CDP backoff
         models.py       CaptureConfig dataclass + defaults (reconnect, rotation, purge, redact fields)
