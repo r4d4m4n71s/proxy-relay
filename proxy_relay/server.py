@@ -31,17 +31,6 @@ _HEALTH_READ_TIMEOUT: float = 15.0
 _STATUS_DEBOUNCE_SECS: float = 5.0
 
 
-def _mask_url(url: str) -> str:
-    """Replace credentials in a proxy URL with *** for safe logging (F-RL7)."""
-    at_idx = url.find("@")
-    if at_idx == -1:
-        return url
-    scheme_end = url.find("://")
-    if scheme_end == -1:
-        return url
-    return url[: scheme_end + 3] + "***@" + url[at_idx + 1 :]
-
-
 class ProxyServer:
     """Local HTTP CONNECT proxy server.
 
@@ -101,7 +90,7 @@ class ProxyServer:
         self._upstream = await asyncio.to_thread(self._upstream_manager.get_upstream)
         log.info(
             "Upstream resolved: %s (country=%s)",
-            _mask_url(self._upstream.url),
+            self._upstream.masked_url,
             self._upstream.country or "any",
         )
 
@@ -155,7 +144,7 @@ class ProxyServer:
 
         addrs = ", ".join(str(s.getsockname()) for s in self._server.sockets)
         log.info("Proxy server listening on %s", addrs)
-        log.info("Forwarding via upstream SOCKS5 at %s", _mask_url(self._upstream.url))
+        log.info("Forwarding via upstream SOCKS5 at %s", self._upstream.masked_url)
 
     async def serve_forever(self) -> None:
         """Run the server until a shutdown signal is received.
@@ -228,8 +217,8 @@ class ProxyServer:
             self._upstream = new_upstream
             log.info(
                 "Upstream rotated: %s (country=%s)",
-                _mask_url(self._upstream.url),
-                self._upstream.country or "any",
+                new_upstream.masked_url,
+                new_upstream.country or "any",
             )
             await self._update_status_file_async()
         except Exception as exc:
@@ -342,7 +331,7 @@ class ProxyServer:
         # Build a descriptive error with upstream context and actionable hints.
         profile = self._profile_name
         country = self._upstream.country or "any"
-        upstream_url = _mask_url(self._upstream.url)
+        upstream_url = self._upstream.masked_url
 
         hint_parts: list[str] = []
         low = last_error.lower()
@@ -411,7 +400,11 @@ class ProxyServer:
         The snapshot is taken in the event loop (single-threaded context) so
         that the thread-pool thread receives a stable copy of all values (E-RL8).
         """
-        if self._upstream is None:
+        # J-RL1: snapshot self._upstream once to a local variable to avoid
+        # torn reads if _do_rotate() swaps the reference between attribute
+        # accesses below.
+        upstream = self._upstream
+        if upstream is None:
             return
 
         # Snapshot all event-loop state before handing off to the thread pool.
@@ -420,8 +413,8 @@ class ProxyServer:
             stats_dict = asdict(self._monitor.get_stats())
 
         profile = self._upstream_manager.profile_name if self._upstream_manager is not None else ""
-        upstream_url = self._upstream.url
-        country = self._upstream.country
+        upstream_url = upstream.masked_url
+        country = upstream.country
         active_connections = self._active_connections
         total_connections = self._total_connections
         pid = os.getpid()

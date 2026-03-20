@@ -83,6 +83,16 @@ class ConnectionMonitor:
     upstream rotation when the error count in the window exceeds the
     configured threshold.
 
+    Thread-safety contract (J-RL5)
+    --------------------------------
+    All public methods — ``record_success``, ``record_error``, ``get_stats``,
+    ``reset``, ``shutdown``, and the properties — **must be called from the
+    same asyncio event loop**.  The class contains no internal locking: it
+    relies on the single-threaded cooperative scheduling guarantee of asyncio
+    for mutual exclusion.  Calling any method from a different thread or a
+    different event loop without external synchronisation is undefined
+    behaviour and may produce data corruption or missed rotation triggers.
+
     Args:
         config: Monitor configuration (thresholds and enabled flag).
         rotate_callback: Async callable invoked to trigger upstream rotation.

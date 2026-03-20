@@ -27,7 +27,8 @@ def _make_upstream() -> UpstreamInfo:
         port=12322,
         username="user",
         password="pass",
-        url="socks5://***@proxy.example.com:12322",
+        url="socks5://user:pass@proxy.example.com:12322",
+        masked_url="socks5://***@proxy.example.com:12322",
         country="us",
     )
 
@@ -291,7 +292,8 @@ class TestDoRotateUsesToThread:
             port=12323,
             username="user2",
             password="pass2",
-            url="socks5://***@new-proxy.example.com:12323",
+            url="socks5://user2:pass2@new-proxy.example.com:12323",
+            masked_url="socks5://***@new-proxy.example.com:12323",
             country="de",
         )
         mgr = _make_manager()
@@ -475,7 +477,8 @@ class TestAsyncIoRefactorBackwardCompatibility:
             port=12400,
             username="u",
             password="p",
-            url="socks5://***@rotated.example.com:12400",
+            url="socks5://u:p@rotated.example.com:12400",
+            masked_url="socks5://***@rotated.example.com:12400",
             country="gb",
         )
         mgr = _make_manager()

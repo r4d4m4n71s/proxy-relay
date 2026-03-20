@@ -635,19 +635,26 @@ def execute_remediations(
                 log.warning("Relay process %d not found — cannot send SIGUSR1", relay_pid)
 
         time.sleep(2)
-        # Poll until IP changes (30s max, 2s interval)
+        # Poll until IP changes (30s max, 2s interval).
+        # J-RL13: show a progress indicator so the user knows we are waiting
+        # (the poll blocks the CLI for up to 30 seconds).
         old_ip = ctx.exit_ip
         deadline = time.time() + 30
         new_ip = old_ip
+        print("  Waiting for IP rotation", end="", flush=True)
         while time.time() < deadline:
             try:
                 new_ip = _browse.health_check(host, port)
                 if new_ip != old_ip:
+                    print()  # newline after dots on success
                     log.info("IP rotated: %s -> %s", old_ip, new_ip)
                     break
             except Exception as exc:
                 log.debug("Health check during rotation poll: %s", exc)
+            print(".", end="", flush=True)
             time.sleep(2)
+        else:
+            print()  # newline after dots on timeout
 
         if new_ip == old_ip:
             log.warning("IP did not change after rotation (still %s)", old_ip)

@@ -17,7 +17,8 @@ def _make_upstream() -> UpstreamInfo:
     return UpstreamInfo(
         host="proxy.example.com", port=12322,
         username="user", password="pass",
-        url="socks5://***@proxy.example.com:12322", country="us",
+        url="socks5://user:pass@proxy.example.com:12322",
+        masked_url="socks5://***@proxy.example.com:12322", country="us",
     )
 
 

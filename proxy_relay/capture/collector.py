@@ -432,14 +432,35 @@ class CaptureCollector:
 def _truncate(text: str, max_bytes: int) -> str:
     """Truncate *text* to at most *max_bytes* UTF-8 bytes.
 
-    The truncation happens on encoded bytes to respect the storage limit, then
-    the result is decoded back to a string (losslessly — the slice is on the
-    encoded form so no partial multi-byte sequences remain).
+    The truncation respects UTF-8 character boundaries to avoid splitting a
+    multi-byte sequence (e.g. an emoji encoded as 4 bytes) at an arbitrary
+    byte offset, which would produce a partial code unit that is invalid
+    UTF-8.
+
+    Algorithm (J-RL14):
+        1. Encode the string to bytes.
+        2. If it fits within *max_bytes*, return the original string unchanged.
+        3. Otherwise walk backwards from byte *max_bytes* until we reach a
+           byte that is NOT a UTF-8 continuation byte (``0x80``–``0xBF``,
+           i.e. ``(b & 0xC0) == 0x80``).  This ensures we land on the start
+           of a character, never in the middle of one.
+        4. Decode the trimmed slice — no ``errors="ignore"`` needed because
+           the slice is guaranteed to end on a complete character boundary.
+
+    Args:
+        text: Input string, possibly multi-byte (emoji, CJK, etc.).
+        max_bytes: Maximum number of UTF-8 encoded bytes to keep.
+
+    Returns:
+        A string whose UTF-8 encoding is at most *max_bytes* bytes long.
     """
     encoded = text.encode("utf-8")
     if len(encoded) <= max_bytes:
         return text
-    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+    end = max_bytes
+    while end > 0 and (encoded[end] & 0xC0) == 0x80:
+        end -= 1
+    return encoded[:end].decode("utf-8")
 
 
 def _headers_to_str(headers: dict[str, str]) -> str:
