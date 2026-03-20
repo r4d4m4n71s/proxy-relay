@@ -504,12 +504,15 @@ def _seed_widevine(profile_dir: Path) -> None:
 
     source = _SNAP_CHROMIUM_DIR / "WidevineCdm"
     if not source.exists():
-        # Fallback: borrow from an existing proxy-relay profile
-        for sibling in _SNAP_PROFILES_DIR.iterdir():
-            candidate = sibling / "WidevineCdm"
-            if candidate.exists() and sibling != profile_dir:
-                source = candidate
-                break
+        # Fallback: borrow from an existing proxy-relay profile.
+        # J-RL12: guard with is_dir() — _SNAP_PROFILES_DIR may not exist yet
+        # on a fresh install before any profile has been created.
+        if _SNAP_PROFILES_DIR.is_dir():
+            for sibling in _SNAP_PROFILES_DIR.iterdir():
+                candidate = sibling / "WidevineCdm"
+                if candidate.exists() and sibling != profile_dir:
+                    source = candidate
+                    break
 
     try:
         if source.exists():

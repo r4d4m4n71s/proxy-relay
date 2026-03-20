@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from proxy_relay.config import MonitorConfig
-from proxy_relay.server import ProxyServer, _mask_url
+from proxy_relay.server import ProxyServer
 from proxy_relay.upstream import UpstreamInfo, UpstreamManager
 
 
@@ -20,7 +20,8 @@ class TestProxyServer:
         mgr.get_upstream.return_value = UpstreamInfo(
             host="proxy.example.com", port=12322,
             username="user", password="pass",
-            url="socks5://***@proxy.example.com:12322", country="us",
+            url="socks5://user:pass@proxy.example.com:12322",
+            masked_url="socks5://***@proxy.example.com:12322", country="us",
         )
         return mgr
 
@@ -104,7 +105,8 @@ class TestProxyServerMonitorConfig:
         mgr.get_upstream.return_value = UpstreamInfo(
             host="proxy.example.com", port=12322,
             username="user", password="pass",
-            url="socks5://***@proxy.example.com:12322", country="us",
+            url="socks5://user:pass@proxy.example.com:12322",
+            masked_url="socks5://***@proxy.example.com:12322", country="us",
         )
         return mgr
 
@@ -188,7 +190,8 @@ class TestProxyServerStopShutdownsMonitor:
         mgr.get_upstream.return_value = UpstreamInfo(
             host="proxy.example.com", port=12322,
             username="user", password="pass",
-            url="socks5://***@proxy.example.com:12322", country="us",
+            url="socks5://user:pass@proxy.example.com:12322",
+            masked_url="socks5://***@proxy.example.com:12322", country="us",
         )
         mgr.profile_name = "browse"
 
@@ -232,7 +235,8 @@ class TestProxyServerStopShutdownsMonitor:
         mgr.get_upstream.return_value = UpstreamInfo(
             host="proxy.example.com", port=12322,
             username="user", password="pass",
-            url="socks5://***@proxy.example.com:12322", country="us",
+            url="socks5://user:pass@proxy.example.com:12322",
+            masked_url="socks5://***@proxy.example.com:12322", country="us",
         )
         mgr.profile_name = "browse"
 
@@ -248,10 +252,23 @@ class TestProxyServerStopShutdownsMonitor:
 
 
 # ---------------------------------------------------------------------------
-# F-RL7: _mask_url
+# F-RL7: masked_url stored on UpstreamInfo (J-RL4: moved from server._mask_url)
 # ---------------------------------------------------------------------------
+
+
+def _mask_url(url: str) -> str:
+    """Local copy of the masking logic for test assertions (J-RL4)."""
+    at_idx = url.find("@")
+    if at_idx == -1:
+        return url
+    scheme_end = url.find("://")
+    if scheme_end == -1:
+        return url
+    return url[: scheme_end + 3] + "***@" + url[at_idx + 1 :]
+
+
 class TestMaskUrl:
-    """Test URL credential masking helper (F-RL7)."""
+    """Test URL credential masking behaviour (F-RL7 / J-RL4)."""
 
     def test_mask_url_with_credentials(self):
         """Credentials are replaced with ***."""
@@ -292,7 +309,8 @@ class TestSigpipeInStart:
         mgr.get_upstream.return_value = UpstreamInfo(
             host="proxy.example.com", port=12322,
             username="user", password="pass",
-            url="socks5://***@proxy.example.com:12322", country="us",
+            url="socks5://user:pass@proxy.example.com:12322",
+            masked_url="socks5://***@proxy.example.com:12322", country="us",
         )
         server = ProxyServer(host="127.0.0.1", port=18090, upstream_manager=mgr)
 
@@ -330,7 +348,8 @@ class TestServerStartedAt:
         mgr.get_upstream.return_value = UpstreamInfo(
             host="proxy.example.com", port=12322,
             username="user", password="pass",
-            url="socks5://***@proxy.example.com:12322", country="us",
+            url="socks5://user:pass@proxy.example.com:12322",
+            masked_url="socks5://***@proxy.example.com:12322", country="us",
         )
         server = ProxyServer(host="127.0.0.1", port=18091, upstream_manager=mgr)
 
@@ -358,7 +377,8 @@ class TestServerStartedAt:
         mgr.get_upstream.return_value = UpstreamInfo(
             host="proxy.example.com", port=12322,
             username="user", password="pass",
-            url="socks5://***@proxy.example.com:12322", country="us",
+            url="socks5://user:pass@proxy.example.com:12322",
+            masked_url="socks5://***@proxy.example.com:12322", country="us",
         )
         mgr.profile_name = "browse"
         server = ProxyServer(host="127.0.0.1", port=18092, upstream_manager=mgr)

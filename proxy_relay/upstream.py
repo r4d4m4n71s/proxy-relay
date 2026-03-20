@@ -20,7 +20,9 @@ class UpstreamInfo:
         port: SOCKS5 proxy port.
         username: Authentication username (empty if whitelist mode).
         password: Authentication password with IProyal parameters.
-        url: Full SOCKS5 URL for logging (masked).
+        url: Full SOCKS5 URL including credentials (never logged).
+        masked_url: Credential-masked SOCKS5 URL safe for logging and status
+            files (J-RL4).
         country: Target country code from the profile.
     """
 
@@ -29,6 +31,7 @@ class UpstreamInfo:
     username: str
     password: str
     url: str
+    masked_url: str
     country: str
 
     def __post_init__(self) -> None:
@@ -162,12 +165,16 @@ class UpstreamManager:
         assert self._config is not None
         profile = self._config.profiles[self._profile_name]
 
+        # J-RL4: store the real URL in `url` (used by python-socks for the
+        # actual connection) and the masked URL in `masked_url` (safe for
+        # logging and status-file writes).
         new_info = UpstreamInfo(
             host=parsed.hostname,
             port=parsed.port,
             username=parsed.username or "",
             password=parsed.password or "",
-            url=mask_url_fn(url),
+            url=url,
+            masked_url=mask_url_fn(url),
             country=profile.country,
         )
 

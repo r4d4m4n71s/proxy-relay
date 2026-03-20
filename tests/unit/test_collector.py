@@ -900,3 +900,87 @@ class TestCaptureConfigRedactPostFieldsDefaults:
         from proxy_relay.capture.models import CaptureConfig
         cfg = CaptureConfig(redact_post_fields=frozenset({"api_key"}))
         assert cfg.redact_post_fields == frozenset({"api_key"})
+
+
+# ---------------------------------------------------------------------------
+# J-RL14 — UTF-8 boundary-aware truncation
+# ---------------------------------------------------------------------------
+
+
+class TestTruncateUtf8Boundary:
+    """Verify _truncate never splits a multi-byte UTF-8 sequence (J-RL14)."""
+
+    def _truncate(self, text: str, max_bytes: int) -> str:
+        from proxy_relay.capture.collector import _truncate
+        return _truncate(text, max_bytes)
+
+    def test_ascii_short_string_unchanged(self):
+        """Short ASCII strings are returned unchanged."""
+        assert self._truncate("hello", 100) == "hello"
+
+    def test_ascii_at_limit_unchanged(self):
+        """String whose UTF-8 length equals max_bytes is returned unchanged."""
+        text = "a" * 10
+        assert self._truncate(text, 10) == text
+
+    def test_ascii_truncation(self):
+        """ASCII string truncated at exact byte boundary."""
+        result = self._truncate("abcdefgh", 5)
+        assert result == "abcde"
+        assert len(result.encode("utf-8")) == 5
+
+    def test_empty_string_unchanged(self):
+        """Empty string is returned unchanged regardless of max_bytes."""
+        assert self._truncate("", 10) == ""
+        assert self._truncate("", 0) == ""
+
+    def test_two_byte_char_not_split(self):
+        """A 2-byte character straddling the cut point is excluded, not split.
+
+        'é' encodes to ``\\xc3\\xa9`` (2 bytes).  With max_bytes=3 and input
+        'aé' (3 bytes total: a + 2), the result should be 'a' (1 byte), not
+        a partial 'é' that would be invalid UTF-8.
+        """
+        # "aé" = 3 bytes: b'a' + b'\xc3\xa9'
+        text = "aé"
+        assert len(text.encode("utf-8")) == 3
+        result = self._truncate(text, 2)
+        # Must not contain a broken 'é'
+        assert result == "a"
+        result.encode("utf-8")  # must not raise
+
+    def test_four_byte_emoji_not_split(self):
+        """A 4-byte emoji is dropped entirely rather than split.
+
+        U+1F600 (😀) encodes to 4 bytes.  With max_bytes=5 and input 'ab😀'
+        (2 + 4 = 6 bytes), the result should be 'ab' (2 bytes).
+        """
+        text = "ab\U0001f600"  # 'ab😀'
+        assert len(text.encode("utf-8")) == 6
+        result = self._truncate(text, 5)
+        assert result == "ab"
+        result.encode("utf-8")  # must not raise
+
+    def test_result_fits_within_max_bytes(self):
+        """The result's UTF-8 encoding never exceeds max_bytes."""
+        text = "こんにちは世界"  # Each char is 3 bytes in UTF-8
+        for limit in range(1, len(text.encode("utf-8")) + 1):
+            result = self._truncate(text, limit)
+            assert len(result.encode("utf-8")) <= limit, (
+                f"Result exceeds {limit} bytes for limit={limit}"
+            )
+
+    def test_multibyte_only_string_truncated_to_empty(self):
+        """Truncating to fewer bytes than one character yields an empty string."""
+        text = "é"  # 2 bytes
+        result = self._truncate(text, 1)
+        assert result == ""
+        result.encode("utf-8")  # must not raise
+
+    def test_result_is_valid_utf8(self):
+        """Result of truncating an emoji-heavy string is always valid UTF-8."""
+        text = "🎵🎶🎸🎻🥁" * 10  # Each emoji is 4 bytes
+        result = self._truncate(text, 17)
+        encoded = result.encode("utf-8")
+        # Must decode cleanly without errors
+        assert encoded.decode("utf-8") == result

@@ -1086,7 +1086,8 @@ class TestServerHealthCheck:
         srv._upstream = UpstreamInfo(
             host="proxy.example.com", port=1080,
             username="u", password="p",
-            url="socks5://***@proxy.example.com:1080",
+            url="socks5://u:p@proxy.example.com:1080",
+            masked_url="socks5://***@proxy.example.com:1080",
             country="us",
         )
         return srv

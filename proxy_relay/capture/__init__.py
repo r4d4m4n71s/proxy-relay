@@ -205,20 +205,23 @@ class CaptureSession:
             # Re-open the connection with check_same_thread=False so the
             # writer thread can use it without raising ProgrammingError.
             #
-            # G-RL5: This accesses SqliteStore._conn directly because
-            # telemetry-monitor's SqliteStore (an external package) does not
-            # expose a public API to reopen its connection with
-            # check_same_thread=False.  The coupling is intentional and
-            # accepted: SqliteStore._conn is the only way to perform this
-            # necessary cross-thread reconnect without forking telemetry-monitor.
-            if sqlite_store._conn is not None:
-                sqlite_store._conn.close()
-                sqlite_store._conn = _sqlite3.connect(
-                    str(db_path_resolved), timeout=10.0, check_same_thread=False,
-                )
-                sqlite_store._conn.execute("PRAGMA journal_mode=WAL")
-                sqlite_store._conn.execute("PRAGMA synchronous=NORMAL")
-                sqlite_store._conn.execute("PRAGMA busy_timeout=5000")
+            # J-RL7: prefer sqlite_store.reconnect(check_same_thread=False) when
+            # available (telemetry-monitor may add this public API in a future
+            # release).  Fall back to the private _conn access when reconnect()
+            # does not exist yet, so we stay compatible with the current release
+            # without forking telemetry-monitor.
+            try:
+                sqlite_store.reconnect(check_same_thread=False)
+            except AttributeError:
+                # reconnect() not yet available — use private _conn as before.
+                if sqlite_store._conn is not None:
+                    sqlite_store._conn.close()
+                    sqlite_store._conn = _sqlite3.connect(
+                        str(db_path_resolved), timeout=10.0, check_same_thread=False,
+                    )
+                    sqlite_store._conn.execute("PRAGMA journal_mode=WAL")
+                    sqlite_store._conn.execute("PRAGMA synchronous=NORMAL")
+                    sqlite_store._conn.execute("PRAGMA busy_timeout=5000")
         except ImportError:
             pass  # BackgroundWriter is mocked in tests — sqlite_store not needed
 
@@ -241,7 +244,18 @@ class CaptureSession:
         # Enable CDP domains
         await self._cdp.send("Network.enable", {"maxPostDataSize": self._config.max_body_bytes})
         await self._cdp.send("Page.enable")
-        log.debug("CDP Network + Page domains enabled")
+        # J-RL11: enable storage domains here (once, at session start) so that
+        # _poll_storage() never calls enable mid-session — which would fail after
+        # the first call because the domain is already enabled.
+        try:
+            await self._cdp.send("Storage.enable")
+        except Exception:
+            log.debug("Could not enable Storage domain", exc_info=True)
+        try:
+            await self._cdp.send("IndexedDB.enable")
+        except Exception:
+            log.debug("Could not enable IndexedDB domain", exc_info=True)
+        log.debug("CDP Network + Page + Storage + IndexedDB domains enabled")
 
         # Set up collector
         collector = CaptureCollector(
@@ -340,18 +354,13 @@ class CaptureSession:
                 pass
 
     async def _poll_storage(self, collector: Any) -> None:
-        """Periodically fetch localStorage/sessionStorage/IndexedDB via CDP."""
-        interval = self._config.storage_poll_interval_s
+        """Periodically fetch localStorage/sessionStorage/IndexedDB via CDP.
 
-        # Enable storage-related domains (Page.enable already called in start())
-        try:
-            await self._cdp.send("Storage.enable")
-        except Exception:
-            log.debug("Could not enable Storage domain", exc_info=True)
-        try:
-            await self._cdp.send("IndexedDB.enable")
-        except Exception:
-            log.debug("Could not enable IndexedDB domain", exc_info=True)
+        Storage and IndexedDB domains are enabled once in ``start()`` (and
+        ``_reconnect_cdp()`` after reconnect), not here, so enabling is never
+        called redundantly mid-session (J-RL11).
+        """
+        interval = self._config.storage_poll_interval_s
 
         while self._stop_event is not None and not self._stop_event.is_set():
             try:
@@ -505,9 +514,17 @@ class CaptureSession:
         self._cdp = _CdpClient()
         await self._cdp.connect(cdp_port)
 
-        # Re-enable CDP domains
+        # Re-enable CDP domains (J-RL11: mirror the enable sequence from start())
         await self._cdp.send("Network.enable", {"maxPostDataSize": self._config.max_body_bytes})
         await self._cdp.send("Page.enable")
+        try:
+            await self._cdp.send("Storage.enable")
+        except Exception:
+            log.debug("Could not enable Storage domain on reconnect", exc_info=True)
+        try:
+            await self._cdp.send("IndexedDB.enable")
+        except Exception:
+            log.debug("Could not enable IndexedDB domain on reconnect", exc_info=True)
 
         # Re-subscribe collector to events
         collector = self._collector
@@ -551,8 +568,9 @@ class CaptureSession:
             # Use the existing recv_loop task started by connect() — do NOT
             # create a second one (two concurrent recv() on the same WebSocket
             # causes immediate disconnection).
-            if self._cdp is not None and self._cdp._recv_task is not None:
-                tasks.append(self._cdp._recv_task)
+            # J-RL8: use the public recv_task property instead of _recv_task.
+            if self._cdp is not None and self._cdp.recv_task is not None:
+                tasks.append(self._cdp.recv_task)
 
             # Wait for stop event or for any task to finish
             stop_wait = asyncio.create_task(self._stop_event.wait(), name="stop-wait")
@@ -645,8 +663,9 @@ class CaptureSession:
         self._poll_tasks = []
 
         # Disable all enabled CDP domains and close connection
+        # J-RL11: include Storage.disable to pair with the Storage.enable in start()
         if self._cdp is not None:
-            for domain_cmd in ("Network.disable", "Page.disable", "IndexedDB.disable"):
+            for domain_cmd in ("Network.disable", "Page.disable", "Storage.disable", "IndexedDB.disable"):
                 try:
                     await self._cdp.send(domain_cmd)
                 except Exception:

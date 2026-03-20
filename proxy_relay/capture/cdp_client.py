@@ -50,6 +50,19 @@ class CdpClient:
 
     # ── Public API ────────────────────────────────────────────────────────
 
+    @property
+    def recv_task(self) -> asyncio.Task[None] | None:
+        """Return the active CDP receive loop task, or None if not connected.
+
+        Exposes the internal ``_recv_task`` as a read-only public attribute so
+        callers (e.g. ``CaptureSession.run_until_stopped``) can await or
+        cancel the task without accessing private state (J-RL8).
+
+        Returns:
+            The background asyncio.Task running ``recv_loop()``, or None.
+        """
+        return self._recv_task
+
     async def connect(
         self,
         port: int,
