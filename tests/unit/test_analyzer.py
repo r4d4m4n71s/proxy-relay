@@ -881,3 +881,38 @@ class TestSessionFilter:
 
         report = analyze(db_path, session_id=None)
         assert report.total_requests == 2
+
+
+# ---------------------------------------------------------------------------
+# 16. J-RL15: _count validates table names
+# ---------------------------------------------------------------------------
+
+
+class TestCountTableValidation:
+    """J-RL15: _count rejects unknown table names."""
+
+    def test_allowed_tables_pass(self, populated_db: Path):
+        from proxy_relay.capture.analyzer import _count
+
+        conn = sqlite3.connect(f"file:{populated_db}?mode=ro", uri=True)
+        try:
+            assert _count(conn, "http_requests") >= 0
+            assert _count(conn, "http_responses") >= 0
+        finally:
+            conn.close()
+
+    def test_unknown_table_raises_valueerror(self, populated_db: Path):
+        from proxy_relay.capture.analyzer import _count
+
+        conn = sqlite3.connect(f"file:{populated_db}?mode=ro", uri=True)
+        try:
+            with pytest.raises(ValueError, match="Unknown table"):
+                _count(conn, "users; DROP TABLE http_requests")
+        finally:
+            conn.close()
+
+    def test_allowed_tables_constant_exists(self):
+        from proxy_relay.capture.analyzer import _ALLOWED_TABLES
+
+        assert "http_requests" in _ALLOWED_TABLES
+        assert "http_responses" in _ALLOWED_TABLES

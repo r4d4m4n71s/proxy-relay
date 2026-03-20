@@ -305,3 +305,33 @@ class TestReadChunkedBodyTrailers:
 
         body = await _read_chunked_body(reader, raw, 1024)
         assert body == b"abc"
+
+    @pytest.mark.asyncio
+    async def test_chunked_body_too_many_trailers_raises(self):
+        """J-RL6: >100 trailer lines raises TunnelError."""
+        from proxy_relay.exceptions import TunnelError
+        from proxy_relay.handler import _read_chunked_body
+
+        # Build: "0\r\n" + 101 non-empty trailer lines + "\r\n" (never reached)
+        trailer_lines = b"".join(f"X-T-{i}: v\r\n".encode() for i in range(101))
+        raw = b"0\r\n" + trailer_lines + b"\r\n"
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        reader.read = AsyncMock(return_value=b"")
+
+        with pytest.raises(TunnelError, match="Too many trailer"):
+            await _read_chunked_body(reader, raw, 1024)
+
+    @pytest.mark.asyncio
+    async def test_chunked_body_99_trailers_ok(self):
+        """J-RL6: 99 trailer lines + terminator is within the cap."""
+        from proxy_relay.handler import _read_chunked_body
+
+        trailer_lines = b"".join(f"X-T-{i}: v\r\n".encode() for i in range(99))
+        raw = b"3\r\nabc\r\n0\r\n" + trailer_lines + b"\r\n"
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        reader.read = AsyncMock(return_value=b"")
+
+        body = await _read_chunked_body(reader, raw, 1024)
+        assert body == b"abc"

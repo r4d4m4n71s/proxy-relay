@@ -431,12 +431,17 @@ def _normalize_path(domain: str, path: str, query: str) -> str:
 # ── Internal analysis functions ──────────────────────────────────────────
 
 
+_ALLOWED_TABLES: frozenset[str] = frozenset({"http_requests", "http_responses"})
+
+
 def _count(
     conn: sqlite3.Connection,
     table: str,
     session_filter: _SessionFilter = ("", ()),
 ) -> int:
-    """Return row count for a table (safe — table name is never user input)."""
+    """Return row count for a table. Table name is validated against an allow-list."""
+    if table not in _ALLOWED_TABLES:
+        raise ValueError(f"Unknown table: {table!r} (allowed: {sorted(_ALLOWED_TABLES)})")
     where_frag, params = session_filter
     where = f"WHERE 1=1 {where_frag}" if where_frag else ""
     cursor = conn.execute(f"SELECT count(*) FROM {table} {where}", params)  # noqa: S608
