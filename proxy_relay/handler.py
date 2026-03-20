@@ -7,6 +7,7 @@ request, and dispatches to the appropriate handler.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import time
 from collections.abc import Awaitable, Callable
 
@@ -32,6 +33,23 @@ _REQUEST_TIMEOUT: float = 30.0
 
 # Internal health endpoint path.
 HEALTH_PATH: str = "/__health"
+
+
+def _is_loopback(peer_str: str) -> bool:
+    """Return True if peer address is loopback (127.x.x.x or ::1).
+
+    Args:
+        peer_str: Peer address string in "host:port" or "[ipv6]:port" format.
+
+    Returns:
+        True if the peer IP is a loopback address, False otherwise (including
+        on parse error, which fails safe by denying access).
+    """
+    try:
+        host = peer_str.rsplit(":", 1)[0].strip("[]")
+        return ipaddress.ip_address(host).is_loopback
+    except (ValueError, IndexError):
+        return False
 
 
 async def handle_connection(
@@ -69,6 +87,13 @@ async def handle_connection(
         )
 
         if method != "CONNECT" and target.endswith(HEALTH_PATH) and health_callback is not None:
+            # PR-6: restrict health endpoint to loopback clients only to prevent
+            # remote callers from probing internal server state / exit IP.
+            if not _is_loopback(peer_str):
+                client_writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                await client_writer.drain()
+                log.warning("Health endpoint access denied for non-loopback peer %s", peer_str)
+                return
             await _handle_health(client_writer, health_callback)
         elif method == "CONNECT":
             await _handle_connect(

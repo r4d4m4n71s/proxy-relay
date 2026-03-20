@@ -280,6 +280,33 @@ class DatadomeCookieNotExpired:
     name = "datadome_cookie_not_expired"
     remediation = Remediation.DELETE_COOKIE
 
+    # PR-8: warn when cookie is older than this many days (server-side revocation risk)
+    _FRESHNESS_DAYS: int = 7
+
+    @staticmethod
+    def _cookie_age_days(expires_chromium: int, now: float | None = None) -> float | None:
+        """Estimate cookie age in days from its expiry timestamp.
+
+        Assumes DataDome cookies have ~365-day lifetime.
+        Returns None if estimation is not possible.
+
+        Args:
+            expires_chromium: Chromium expires_utc value (microseconds since 1601-01-01).
+            now: Current Unix timestamp override (for testing). Defaults to time.time().
+
+        Returns:
+            Estimated age in days, or None if the cookie has an unusual lifetime.
+        """
+        if now is None:
+            now = time.time()
+        expires_unix = (expires_chromium / 1_000_000) - _CHROMIUM_EPOCH_OFFSET
+        remaining_days = (expires_unix - now) / 86400
+        # DataDome default lifetime is ~365 days
+        issued_days_ago = 365 - remaining_days
+        if issued_days_ago < 0:
+            return None  # cookie has unusual lifetime
+        return issued_days_ago
+
     def evaluate(self, ctx: BrowseContext) -> RuleResult:
         cookie = _read_datadome_cookie(ctx.profile_dir)
         if cookie is None:
@@ -302,6 +329,19 @@ class DatadomeCookieNotExpired:
             )
         unix_ts = _chromium_expires_to_unix(expires_utc)
         if unix_ts > time.time():
+            # PR-8: cookie is valid — check freshness and warn if stale
+            age_days = self._cookie_age_days(expires_utc)
+            if age_days is not None and age_days > self._FRESHNESS_DAYS:
+                return RuleResult(
+                    passed=True,
+                    skipped=False,
+                    rule_name=self.name,
+                    remediation=Remediation.NONE,
+                    reason=(
+                        f"Cookie valid but {age_days:.0f} days old — consider re-warmup "
+                        f"(server-side revocation possible after {self._FRESHNESS_DAYS} days)"
+                    ),
+                )
             return RuleResult(
                 passed=True,
                 skipped=False,
@@ -546,7 +586,11 @@ def print_validation_report(
         if r.skipped:
             print(f"    -  {r.rule_name:<40s}  \u2014 skipped")
         elif r.passed:
-            print(f"    \u2713 {r.rule_name}")
+            # PR-8: display a warning indicator for stale-cookie advisory results
+            if r.reason and "consider re-warmup" in r.reason.lower():
+                print(f"    \u2713 {r.rule_name:<40s}  \u2014 \u26a0 {r.reason}")
+            else:
+                print(f"    \u2713 {r.rule_name}")
         else:
             print(f"    \u2717 {r.rule_name:<40s}  \u2014 {r.reason}")
             failed_results.append(r)

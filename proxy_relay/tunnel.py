@@ -114,6 +114,10 @@ async def open_tunnel(
             f"after {_CONNECT_TIMEOUT:.0f}s"
         ) from exc
     except Exception as exc:
+        # PR-10 audit (2026-03-20): python-socks exceptions contain only
+        # protocol errors ("Connection refused", "Authentication failure")
+        # and target host:port — never SOCKS5 proxy credentials.
+        # Verified in python-socks _protocols/socks5.py + _errors.py.
         raise TunnelError(
             f"SOCKS5 tunnel to {target_host}:{target_port} failed: {exc}"
         ) from exc

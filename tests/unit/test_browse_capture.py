@@ -73,7 +73,7 @@ class TestChromeArgsCdpPort:
             proxy_port=8080,
             cdp_port=9222,
         )
-        assert any("--disable-webrtc-stun-origin" in arg for arg in cmd)
+        assert any("--webrtc-ip-handling-policy=disable_non_proxied_udp" in arg for arg in cmd)
         assert any("--proxy-server=" in arg for arg in cmd)
         assert any("--remote-debugging-port=9222" in arg for arg in cmd)
 

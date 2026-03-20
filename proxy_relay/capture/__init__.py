@@ -240,6 +240,10 @@ class CaptureSession:
         # Connect CDP
         self._cdp = _CdpClient()
         await self._cdp.connect(cdp_port)
+        log.warning(
+            "CDP active — elevated DataDome detection risk. "
+            "Use warmup (no CDP) to build trust before capture sessions."
+        )
 
         # Enable CDP domains
         await self._cdp.send("Network.enable", {"maxPostDataSize": self._config.max_body_bytes})
