@@ -7,7 +7,7 @@ Repo: https://github.com/r4d4m4n71s/proxy-relay (private)
 All persistent state: `~/.config/proxy-relay/` (config.toml, PID files, status files, browser profiles)
 
 ## Project status
-**729 tests on `main`** | 27 production modules, 26 test files. S81 complete: F-RL28 capture POST body redaction. Warmup rewrite: SQLite cookie polling (no CDP), 5-rule profile validation, optional telemetry to ~/.config/proxy-relay/telemetry.db.
+**729 tests on `main`** | 27 production modules, 26 test files. S81 complete. Warmup rewrite: SQLite cookie polling (no CDP), 5-rule profile validation, telemetry to ~/.config/proxy-relay/telemetry.db. WidevineCdm auto-seeded into new snap Chromium profiles.
 
 ### Async I/O refactor (S63 — C4-17)
 4 blocking I/O paths in `server.py` are now wrapped with `asyncio.to_thread()`:

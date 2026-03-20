@@ -1,5 +1,27 @@
 # Session Notes
 
+## 2026-03-20 — WidevineCdm auto-seed + daemon venv migration
+
+**Branch:** `main`
+
+### Accomplished
+| File/Area | Change |
+|-----------|--------|
+| `proxy_relay/browse.py` | `_seed_widevine()`: copies WidevineCdm from snap Chromium dir into new profiles at creation; fallback to sibling profiles; non-fatal try/except |
+| `~/.venv/tidal-dl-daemon/` | New isolated daemon venv with editable installs of all 4 projects (replaces pipx) |
+| `~/.config/systemd/user/tidal-dl-daemon.service` | ExecStart updated to full daemon venv path |
+
+**Test count:** 729 tests, 0 failures.
+
+### Current state
+- New browser profiles get Widevine on first launch — no manual browser restart needed.
+- Daemon fully isolated in plain venv, no pipx dependency.
+
+### Next steps
+1. Next architecture review when significant new code lands.
+
+---
+
 ## 2026-03-19 — Warmup SQLite rewrite, profile validation, telemetry
 
 **Branch:** `main`
@@ -50,30 +72,5 @@
 
 ### Next steps
 1. Next architecture review when significant new code lands.
-
----
-
-## 2026-03-18 — S82: code fixes + stale verification
-
-**Branch:** `main`
-
-### Accomplished
-| File/Area | Change |
-|-----------|--------|
-| `pyproject.toml` | F02: removed unused `tomlkit>=0.13.0` from runtime deps |
-| `proxy_relay/upstream.py` | F20: demoted upstream hostname log from INFO → DEBUG |
-| `tests/unit/test_dns_leak.py` | F19: added comment explaining browse.py exclusion |
-| `tests/unit/test_browse.py` | F17: added `test_oserror_does_not_propagate` for `open_browser_tab` |
-| `docs/architecture-review.md` | Rewrote: 7 remaining open items targeting S83; 12 stale findings removed |
-| `docs/architecture-review-done.md` | Created with S82 batch (16 items: 4 fixed, 12 verified stale) |
-
-**Test count:** 651 tests, 0 failures.
-
-### Current state
-- 4 findings fixed in S82; 12 stale findings verified already fixed in prior sprints.
-- 7 docs/rename items remained → all resolved in S83.
-
-### Next steps
-1. S83 docs sweep (completed same session).
 
 > Running log of sprint sessions. Most recent entry first. Rolling window: 5 entries max.
