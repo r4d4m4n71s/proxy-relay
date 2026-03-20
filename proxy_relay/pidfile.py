@@ -267,6 +267,9 @@ def write_status(
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(json.dumps(data, indent=2))
+            # PR-7: 0o600 (owner-only) protects the masked upstream URL from
+            # other users on shared systems. The URL contains host:port (password
+            # masked) for status/debug use.
             os.chmod(tmp_path, 0o600)
             os.replace(tmp_path, path)
         except Exception:

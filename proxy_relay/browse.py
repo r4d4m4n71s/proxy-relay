@@ -129,7 +129,9 @@ def _chrome_args(
 
     Includes:
     - ``--user-data-dir`` (profile isolation)
-    - ``--disable-webrtc-stun-origin`` + ``--enforce-webrtc-ip-permission-check``
+    - ``--webrtc-ip-handling-policy=disable_non_proxied_udp`` (PR-1: no WebRTC STUN leaks)
+    - ``--disable-infobars`` (PR-5: suppress automation yellow bar)
+    - ``--disable-ipv6`` (PR-9: prevent IPv6 bypass of SOCKS5 tunnel)
     - ``--disable-blink-features=AutomationControlled`` (suppresses ``navigator.webdriver``)
     - ``--proxy-server`` (when *proxy_port* is not ``None``)
     - ``--no-first-run``, ``--disable-default-apps``, ``--disable-sync``
@@ -161,8 +163,10 @@ def _chrome_args(
         "--no-first-run",
         "--disable-default-apps",
         "--disable-sync",
-        "--disable-webrtc-stun-origin",
-        "--enforce-webrtc-ip-permission-check",
+        # PR-1: prevent WebRTC STUN from leaking real IP via UDP bypass
+        "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+        "--disable-infobars",  # PR-5: suppress yellow bar from AutomationControlled flag
+        "--disable-ipv6",  # PR-9: prevent IPv6 connections bypassing SOCKS5 tunnel
         # Suppress navigator.webdriver even when CDP is attached.
         # Unconditional — must apply to every launch so DataDome does not
         # flag the session as automated.
@@ -339,11 +343,24 @@ def find_chromium() -> Path:
         if candidate_path.is_absolute():
             if candidate_path.exists():
                 log.debug("Found Chromium at absolute path: %s", candidate_path)
+                resolved = str(candidate_path)
+                if "/snap/" in resolved or "/snap/bin/" in resolved:
+                    log.warning(
+                        "Snap Chromium detected (%s) — native Chrome/Brave recommended "
+                        "for lower detection risk (TLS fingerprint divergence with Snap builds).",
+                        resolved,
+                    )
                 return candidate_path
         else:
             resolved = shutil.which(candidate)
             if resolved is not None:
                 log.debug("Found Chromium via PATH: %s", resolved)
+                if "/snap/" in resolved or "/snap/bin/" in resolved:
+                    log.warning(
+                        "Snap Chromium detected (%s) — native Chrome/Brave recommended "
+                        "for lower detection risk (TLS fingerprint divergence with Snap builds).",
+                        resolved,
+                    )
                 return Path(resolved)
 
     raise BrowseError(

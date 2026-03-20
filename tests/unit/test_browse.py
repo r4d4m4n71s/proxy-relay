@@ -1512,8 +1512,10 @@ class TestChromeArgs:
         from proxy_relay.browse import _chrome_args
 
         cmd, env = _chrome_args(Path("/usr/bin/chromium"), Path("/tmp/profile"))
-        assert "--disable-webrtc-stun-origin" in cmd
-        assert "--enforce-webrtc-ip-permission-check" in cmd
+        # PR-1: old flags replaced by policy-based WebRTC control
+        assert "--webrtc-ip-handling-policy=disable_non_proxied_udp" in cmd
+        assert "--disable-webrtc-stun-origin" not in cmd
+        assert "--enforce-webrtc-ip-permission-check" not in cmd
 
     def test_proxy_flags_when_port_set(self):
         from proxy_relay.browse import _chrome_args

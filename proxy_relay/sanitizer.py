@@ -21,6 +21,14 @@ _STRIP_HEADERS: frozenset[str] = frozenset({
     "via",
     "proxy-authorization",
     "proxy-connection",
+    # PR-3: additional headers that can leak client identity through CDN/proxy chains
+    "x-proxy-connection",
+    "client-ip",
+    "true-client-ip",
+    "cf-connecting-ip",
+    "x-cluster-client-ip",
+    "x-original-forwarded-for",
+    "x-proxyuser-ip",
 })
 
 # Headers that should be present but may need normalisation.
