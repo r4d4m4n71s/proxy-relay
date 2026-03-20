@@ -120,6 +120,7 @@ def _chrome_args(
     proxy_host: str | None = None,
     proxy_port: int | None = None,
     timezone: str | None = None,
+    lang: str | None = None,
     cdp_port: int | None = None,
     start_url: str | None = None,
 ) -> tuple[list[str], dict[str, str] | None]:
@@ -128,10 +129,11 @@ def _chrome_args(
     Includes:
     - ``--user-data-dir`` (profile isolation)
     - ``--disable-webrtc-stun-origin`` + ``--enforce-webrtc-ip-permission-check``
-    - ``--host-resolver-rules`` (DNS leak prevention, only with proxy)
+    - ``--disable-blink-features=AutomationControlled`` (suppresses ``navigator.webdriver``)
     - ``--proxy-server`` (when *proxy_port* is not ``None``)
     - ``--no-first-run``, ``--disable-default-apps``, ``--disable-sync``
     - ``--start-maximized``
+    - ``--lang`` (when *lang* is not ``None``)
     - ``TZ`` environment variable (when *timezone* is not ``None``)
     - ``--remote-debugging-port`` (when *cdp_port* is not ``None``)
     - *start_url* as the initial page (positional arg, appended last)
@@ -142,6 +144,8 @@ def _chrome_args(
         proxy_host: Local proxy bind address.
         proxy_port: Local proxy port. ``None`` means no proxy flags.
         timezone: IANA timezone name for ``TZ`` env override.
+        lang: BCP 47 Accept-Language string for ``--lang`` flag (e.g.
+            ``"es-419,es"``). ``None`` means no ``--lang`` flag.
         cdp_port: TCP port for ``--remote-debugging-port``. ``None`` means
             no CDP flags.
         start_url: URL to open on launch. ``None`` means browser default.
@@ -158,12 +162,18 @@ def _chrome_args(
         "--disable-sync",
         "--disable-webrtc-stun-origin",
         "--enforce-webrtc-ip-permission-check",
+        # Suppress navigator.webdriver even when CDP is attached.
+        # Unconditional — must apply to every launch so DataDome does not
+        # flag the session as automated.
+        "--disable-blink-features=AutomationControlled",
     ]
+
+    if lang is not None:
+        cmd.append(f"--lang={lang}")
 
     if proxy_port is not None:
         host = proxy_host or "127.0.0.1"
         cmd.append(f"--proxy-server=http://{host}:{proxy_port}")
-        cmd.append('--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1')
 
     if cdp_port is not None:
         cmd.append(f"--remote-debugging-port={cdp_port}")
@@ -192,6 +202,8 @@ def open_browser(
     profile_name: str = "default",
     chromium_path: Path | None = None,
     timezone: str | None = None,
+    lang: str | None = None,
+    cdp_port: int | None = None,
 ) -> BrowserHandle:
     """Launch Chromium configured for proxied browsing.
 
@@ -205,6 +217,8 @@ def open_browser(
         profile_name: Browser profile name (persistent, Snap-aware).
         chromium_path: Explicit Chromium binary.  Auto-detected if ``None``.
         timezone: IANA timezone for ``TZ`` env var spoofing.
+        lang: BCP 47 Accept-Language string for ``--lang`` flag.
+        cdp_port: Port for ``--remote-debugging-port`` (CDP).  ``None`` disables CDP.
 
     Returns:
         :class:`BrowserHandle` for lifecycle management.
@@ -223,6 +237,8 @@ def open_browser(
         proxy_host=proxy_host,
         proxy_port=proxy_port,
         timezone=timezone,
+        lang=lang,
+        cdp_port=cdp_port,
         start_url=url,
     )
 
@@ -514,7 +530,9 @@ def list_profiles() -> list[str]:
     """Return the names of all existing browser profiles.
 
     Scans both the Snap and non-Snap profile directories and returns a
-    deduplicated, sorted list of profile names.
+    deduplicated, sorted list of profile names.  Any Snap profile that is
+    missing a convenience symlink in the non-Snap location is repaired
+    automatically so the file manager always shows a complete list.
     """
     names: set[str] = set()
     for base in (BROWSER_PROFILES_DIR, _SNAP_PROFILES_DIR):
@@ -522,6 +540,13 @@ def list_profiles() -> list[str]:
             for child in base.iterdir():
                 if child.is_dir() or child.is_symlink():
                     names.add(child.name)
+
+    # Self-heal: ensure every Snap profile has a symlink in BROWSER_PROFILES_DIR.
+    if _SNAP_PROFILES_DIR.is_dir():
+        for child in _SNAP_PROFILES_DIR.iterdir():
+            if child.is_dir():
+                _create_profile_symlink(child.name, child)
+
     return sorted(names)
 
 
@@ -821,6 +846,7 @@ class BrowseSupervisor:
         relay_pid: int,
         rotate_interval_min: int = 30,
         timezone: str | None = None,
+        lang: str | None = None,
         capture_session: object | None = None,
         start_url: str | None = None,
     ) -> None:
@@ -831,6 +857,7 @@ class BrowseSupervisor:
         self._relay_pid = relay_pid
         self._rotate_interval_min = rotate_interval_min
         self._timezone = timezone
+        self._lang = lang
         self._capture = capture_session
         self._start_url = start_url
         self._cdp_port: int | None = (
@@ -925,6 +952,7 @@ class BrowseSupervisor:
             proxy_host=self._proxy_host,
             proxy_port=self._proxy_port,
             timezone=self._timezone,
+            lang=self._lang,
             cdp_port=self._cdp_port,
             start_url=self._start_url,
         )

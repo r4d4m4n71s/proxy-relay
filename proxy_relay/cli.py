@@ -11,6 +11,13 @@ from pathlib import Path
 from proxy_relay import __version__
 from proxy_relay import browse as _browse
 from proxy_relay.config import MonitorConfig, RelayConfig
+from proxy_relay.profile_rules import (
+    BrowseContext,
+    default_registry,
+    execute_remediations,
+    is_tidal_url,
+    print_validation_report,
+)
 from proxy_relay.exceptions import BrowseError, ConfigError, ProxyRelayError
 from proxy_relay.logger import configure_logging, get_logger
 from proxy_relay.pidfile import (
@@ -26,6 +33,7 @@ from proxy_relay.pidfile import (
     status_path_for,
 )
 from proxy_relay.server import ProxyServer
+from proxy_relay.lang import get_language_for_country
 from proxy_relay.tz import check_timezone_mismatch, get_timezone_for_country
 from proxy_relay.upstream import UpstreamManager
 
@@ -213,6 +221,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="URL",
         help="URL to open on browser launch (default: browser new-tab page).",
+    )
+    browse_parser.add_argument(
+        "--workspace",
+        type=str,
+        default="default",
+        metavar="WORKSPACE",
+        help=(
+            "Browser workspace identifier. Combined with --profile to form the "
+            "profile directory {profile}+{workspace}. Allows multiple browser "
+            "identities sharing the same proxy-st profile. Default: 'default'."
+        ),
+    )
+    browse_parser.add_argument(
+        "--account",
+        type=str,
+        default=None,
+        metavar="EMAIL",
+        help="Account email to associate with this profile (stored in .warmup-meta.json).",
     )
     browse_parser.add_argument(
         "--log-level",
@@ -687,17 +713,75 @@ def _cmd_browse(args: argparse.Namespace) -> int:
             print(str(exc), file=sys.stderr)
             return 1
 
-        # 5. Profile dir and timezone
-        profile_dir = _browse.get_profile_dir(profile_name, chromium_path=chromium_path)
+        # 5. Profile dir, timezone, and language
+        workspace = getattr(args, "workspace", "default") or "default"
+        profile_dir_key = f"{profile_name}+{workspace}"
+        profile_dir = _browse.get_profile_dir(profile_dir_key, chromium_path=chromium_path)
 
         country = (status_data or {}).get("country", "")
         proxy_tz: str | None = None
+        proxy_lang: str | None = None
         if country:
             proxy_tz = get_timezone_for_country(country)
             if proxy_tz:
                 print(f"Timezone spoofing: TZ={proxy_tz} (country: {country.upper()})")
             else:
                 log.warning("No timezone mapping for country %r — using system timezone", country)
+            proxy_lang = get_language_for_country(country)
+            if proxy_lang:
+                print(f"Language spoofing: --lang={proxy_lang} (country: {country.upper()})")
+            else:
+                log.warning("No language mapping for country %r — no --lang flag", country)
+
+        # 5b. Profile validation (TIDAL sessions only)
+        account_email = getattr(args, "account", None)
+        start_url_for_check = getattr(args, "start_url", None)
+
+        if is_tidal_url(start_url_for_check):
+            try:
+                ctx = BrowseContext(
+                    profile_dir=profile_dir,
+                    exit_ip=exit_ip,
+                    country=country,
+                    lang=proxy_lang,
+                    timezone=proxy_tz,
+                    account_email=account_email,
+                )
+                results = default_registry().evaluate_all(ctx)
+                failed = [r for r in results if not r.passed and not r.skipped]
+
+                print_validation_report(ctx, results, profile_name)
+
+                if failed:
+                    try:
+                        input("\nPress Enter to apply and continue, Ctrl+C to cancel...")
+                    except KeyboardInterrupt:
+                        print("\nCancelled.")
+                        return 1
+
+                    ctx = execute_remediations(
+                        failed, ctx, relay_pid, profile_name, host, port
+                    )
+                    # Run warmup to acquire new datadome cookie
+                    from proxy_relay.warmup import WarmupSession
+
+                    warmup = WarmupSession(
+                        profile_name=profile_name,
+                        workspace=workspace,
+                        host=host,
+                        port=port,
+                        chromium_path=chromium_path,
+                        lang=proxy_lang,
+                        timezone=proxy_tz,
+                        account_email=account_email,
+                        no_verify=True,  # scripted — browse cmd will open browser after
+                    )
+                    warmup_rc = warmup.run()
+                    if warmup_rc != 0:
+                        print("Warm-up failed — launching browser anyway.", file=sys.stderr)
+            except Exception as exc:
+                log.warning("Profile validation failed (non-fatal): %s", exc)
+                print(f"Warning: profile validation error — {exc}", file=sys.stderr)
 
         # 6. Resolve rotation interval
         if args.no_rotate:
@@ -751,6 +835,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
             relay_pid=relay_pid,
             rotate_interval_min=rotate_min,
             timezone=proxy_tz,
+            lang=proxy_lang,
             capture_session=capture_session,
             start_url=getattr(args, "start_url", None),
         )
@@ -760,7 +845,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
         else:
             print("Auto-rotation disabled")
 
-        print(f"Launching Chromium (profile: {profile_name}, data: {profile_dir})...")
+        print(f"Launching Chromium (profile: {profile_name}, workspace: {workspace}, data: {profile_dir})...")
         return supervisor.run()
 
     finally:

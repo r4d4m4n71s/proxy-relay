@@ -318,6 +318,15 @@ class TestGetProfileDir:
             assert default_dir.exists(), "parent kept — it holds the symlink"
             assert (default_dir / "browse").is_symlink()
 
+    def test_composite_key_creates_correct_dir(self, tmp_path: Path):
+        """get_profile_dir('medellin+default') creates base/'medellin+default'."""
+        from proxy_relay.browse import get_profile_dir
+
+        with patch("proxy_relay.browse.BROWSER_PROFILES_DIR", tmp_path):
+            result = get_profile_dir("medellin+default")
+            assert result == tmp_path / "medellin+default"
+            assert result.is_dir()
+
 
 # ---------------------------------------------------------------------------
 # 5b. list_profiles() / delete_profile()
@@ -1515,7 +1524,6 @@ class TestChromeArgs:
             proxy_port=8080,
         )
         assert "--proxy-server=http://127.0.0.1:8080" in cmd
-        assert any("host-resolver-rules" in arg for arg in cmd)
 
     def test_no_proxy_flags_when_port_none(self):
         from proxy_relay.browse import _chrome_args
@@ -1550,6 +1558,36 @@ class TestChromeArgs:
         assert "--disable-sync" in cmd
         assert "--start-maximized" in cmd
         assert "--user-data-dir=/tmp/profile" in cmd
+
+    def test_disable_blink_features_always_present(self):
+        """--disable-blink-features=AutomationControlled is unconditional."""
+        from proxy_relay.browse import _chrome_args
+
+        cmd, _ = _chrome_args(Path("/usr/bin/chromium"), Path("/tmp/profile"))
+        assert "--disable-blink-features=AutomationControlled" in cmd
+
+    def test_disable_blink_features_present_without_cdp(self):
+        """AutomationControlled is set even when no CDP port is given."""
+        from proxy_relay.browse import _chrome_args
+
+        cmd, _ = _chrome_args(
+            Path("/usr/bin/chromium"), Path("/tmp/profile"), cdp_port=None
+        )
+        assert "--disable-blink-features=AutomationControlled" in cmd
+
+    def test_lang_flag_when_lang_set(self):
+        from proxy_relay.browse import _chrome_args
+
+        cmd, _ = _chrome_args(
+            Path("/usr/bin/chromium"), Path("/tmp/profile"), lang="es-419,es"
+        )
+        assert "--lang=es-419,es" in cmd
+
+    def test_lang_flag_absent_when_lang_none(self):
+        from proxy_relay.browse import _chrome_args
+
+        cmd, _ = _chrome_args(Path("/usr/bin/chromium"), Path("/tmp/profile"), lang=None)
+        assert not any(arg.startswith("--lang=") for arg in cmd)
 
 
 # ---------------------------------------------------------------------------
@@ -1609,6 +1647,20 @@ class TestOpenBrowser:
 
         cmd = mock_popen.call_args[0][0]
         assert not any("proxy-server" in arg for arg in cmd)
+
+    def test_cdp_port_passed_to_chromium(self, tmp_path: Path):
+        from proxy_relay.browse import open_browser
+
+        mock_proc = MagicMock(spec=subprocess.Popen)
+        with (
+            patch("proxy_relay.browse.find_chromium", return_value=Path("/usr/bin/chromium")),
+            patch("proxy_relay.browse.get_profile_dir", return_value=tmp_path / "profile"),
+            patch("subprocess.Popen", return_value=mock_proc) as mock_popen,
+        ):
+            open_browser("https://example.com", profile_name="test", cdp_port=9222)
+
+        cmd = mock_popen.call_args[0][0]
+        assert "--remote-debugging-port=9222" in cmd
 
     def test_os_error_raises_browse_error(self, tmp_path: Path):
         from proxy_relay.browse import open_browser
