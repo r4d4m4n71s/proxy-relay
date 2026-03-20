@@ -40,37 +40,6 @@ _DATADOME_POLL_INTERVAL = 2.0  # seconds between cookie polls
 _BROWSER_POLL_INTERVAL = 1.0   # seconds between browser-alive checks
 
 
-def _check_tidal_blocked(proxy_host: str, proxy_port: int) -> bool:
-    """Return True if TIDAL is actively blocked by DataDome on this IP.
-
-    Makes a direct HTTP request through the relay proxy to listen.tidal.com
-    and checks for DataDome's block signature in the final URL or headers.
-    """
-    import requests
-
-    proxies = {"https": f"http://{proxy_host}:{proxy_port}",
-               "http":  f"http://{proxy_host}:{proxy_port}"}
-    try:
-        resp = requests.get(
-            "https://listen.tidal.com/",
-            proxies=proxies,
-            timeout=15,
-            allow_redirects=True,
-        )
-        final_url = resp.url.lower()
-        blocked = (
-            "datadome" in final_url
-            or "captcha-delivery" in final_url
-            or "interstitial" in final_url
-            or resp.status_code == 403
-        )
-        log.debug("TIDAL block check: url=%s status=%s blocked=%s", resp.url, resp.status_code, blocked)
-        return blocked
-    except Exception as exc:
-        log.debug("TIDAL block check failed (network error): %s", exc)
-        return False
-
-
 class WarmupSession:
     """Orchestrate a DataDome trust warm-up for a given proxy profile.
 
@@ -252,7 +221,7 @@ class WarmupSession:
 
             if cookies_db.exists():
                 try:
-                    uri = f"file:{cookies_db}?mode=ro&immutable=1"
+                    uri = f"file:{cookies_db}?mode=ro"
                     conn = sqlite3.connect(uri, uri=True)
                     try:
                         cur = conn.execute(
@@ -291,30 +260,25 @@ class WarmupSession:
             f"\nTimeout: datadome cookie not found after {self.timeout:.0f}s.",
             file=sys.stderr,
         )
-        poisoned = False
         if elapsed > 30:
-            log.info("Elapsed %.0fs > 30s — checking if TIDAL is actively blocked...", elapsed)
-            if _check_tidal_blocked(self.host, self.port):
-                print("DataDome block confirmed — marking profile as poisoned.", file=sys.stderr)
-                from proxy_relay.profile_rules import write_poisoned_marker
-                write_poisoned_marker(profile_dir)
-                poisoned = True
-                _telemetry.emit(
-                    "warmup.poisoned",
-                    profile=self.profile_name,
-                    run_id=self._run_id,
-                    event_type="poisoned",
-                    exit_ip=exit_ip,
-                    country=self.country,
-                    lang=self.lang or "",
-                    timezone=self.timezone or "",
-                    elapsed_s=round(elapsed, 1),
-                    reason="DataDome block confirmed",
-                    account_email=self.account_email or "",
-                )
-            else:
-                log.info("TIDAL block check negative — likely a transient failure, not poisoning")
-        if not poisoned:
+            log.info("Elapsed %.0fs > 30s — marking profile as poisoned", elapsed)
+            print("Timeout exceeded 30s — marking profile as poisoned.", file=sys.stderr)
+            from proxy_relay.profile_rules import write_poisoned_marker
+            write_poisoned_marker(profile_dir)
+            _telemetry.emit(
+                "warmup.poisoned",
+                profile=self.profile_name,
+                run_id=self._run_id,
+                event_type="poisoned",
+                exit_ip=exit_ip,
+                country=self.country,
+                lang=self.lang or "",
+                timezone=self.timezone or "",
+                elapsed_s=round(elapsed, 1),
+                reason="timeout > 30s — profile poisoned",
+                account_email=self.account_email or "",
+            )
+        else:
             _telemetry.emit(
                 "warmup.failed",
                 profile=self.profile_name,

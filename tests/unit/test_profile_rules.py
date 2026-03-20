@@ -801,3 +801,27 @@ class TestPrintValidationReport:
         assert "delete_profile" not in out.lower()
         assert "delete_cookie" not in out.lower()
         assert "rotate_ip" not in out.lower()
+
+
+# ===========================================================================
+# J-RL9: immutable=1 removed from profile_rules.py Cookies DB open
+# ===========================================================================
+
+
+class TestNoImmutableInProfileRules:
+    """J-RL9: _open_cookies_db uses mode=ro without immutable=1."""
+
+    def test_no_immutable_in_source(self):
+        import importlib.util
+        spec = importlib.util.find_spec("proxy_relay.profile_rules")
+        source = Path(spec.origin).read_text()
+        assert "immutable=1" not in source
+
+    def test_open_cookies_db_still_works(self, tmp_path):
+        """Cookies DB opens successfully with mode=ro (no immutable)."""
+        from proxy_relay.profile_rules import _open_cookies_db
+
+        _make_cookies_db(tmp_path, [_datadome_cookie()])
+        conn = _open_cookies_db(tmp_path)
+        assert conn is not None
+        conn.close()

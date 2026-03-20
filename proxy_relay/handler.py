@@ -393,10 +393,16 @@ async def _read_chunked_body(
             # Consume optional trailer headers + terminating CRLF
             # (RFC 7230 §4.1). _read_line() strips \r\n; an empty
             # result signals the final blank line (F-RL10).
-            while True:
+            # Cap at 100 trailer lines to prevent unbounded reads (J-RL6).
+            _MAX_TRAILER_LINES = 100
+            for _ in range(_MAX_TRAILER_LINES):
                 trailer = await _read_line()
                 if not trailer:
                     break
+            else:
+                raise TunnelError(
+                    f"Too many trailer lines (>{_MAX_TRAILER_LINES})"
+                )
             break
 
         if len(result) + chunk_size > max_size:

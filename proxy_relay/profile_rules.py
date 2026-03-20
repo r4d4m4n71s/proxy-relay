@@ -91,7 +91,7 @@ def _open_cookies_db(profile_dir: Path) -> sqlite3.Connection | None:
     db_path = profile_dir / _COOKIES_DB_PATH
     if not db_path.exists():
         return None
-    uri = f"file:{db_path}?mode=ro&immutable=1"
+    uri = f"file:{db_path}?mode=ro"
     try:
         conn = sqlite3.connect(uri, uri=True)
         # Force WAL checkpoint is not needed in read-only mode; just verify it opens.

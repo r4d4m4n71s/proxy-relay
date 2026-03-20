@@ -262,3 +262,103 @@ class TestWarmupCleanup:
         with patch("proxy_relay.warmup._browse.auto_stop_server") as mock_stop:
             s._cleanup()
         mock_stop.assert_called_once_with(mock_proc, "medellin")
+
+
+# ---------------------------------------------------------------------------
+# J-RL2+J-RL3: _check_tidal_blocked deleted, unconditional poisoning
+# ---------------------------------------------------------------------------
+
+
+class TestCheckTidalBlockedRemoved:
+    """J-RL2+J-RL3: _check_tidal_blocked is deleted from warmup module."""
+
+    def test_no_check_tidal_blocked_function(self):
+        import proxy_relay.warmup as mod
+        assert not hasattr(mod, "_check_tidal_blocked")
+
+    def test_no_requests_import(self):
+        """warmup.py must not import requests (was only used by deleted function)."""
+        import importlib.util
+        spec = importlib.util.find_spec("proxy_relay.warmup")
+        source = Path(spec.origin).read_text()
+        assert "import requests" not in source
+
+
+class TestUnconditionalPoisoning:
+    """J-RL2+J-RL3: timeout >30s unconditionally marks profile as poisoned."""
+
+    def test_timeout_over_30s_poisons_profile(self, tmp_path, capsys):
+        from proxy_relay.warmup import WarmupSession
+
+        _make_cookies_db(tmp_path, with_datadome=False)
+        # timeout=35 ensures elapsed >30s threshold
+        s = WarmupSession(profile_name="medellin", timeout=0.05, no_verify=True)
+        s._browser_handle = MagicMock()
+        s._browser_handle.process.poll.return_value = None
+
+        with (
+            patch("proxy_relay.warmup._DATADOME_POLL_INTERVAL", 0.01),
+            patch("proxy_relay.warmup.time.monotonic") as mock_mono,
+            patch("proxy_relay.profile_rules.write_poisoned_marker") as mock_poison,
+        ):
+            # Simulate: start=0, first check=0 (before deadline), deadline passed,
+            # then elapsed=35 (>30s threshold)
+            call_count = 0
+
+            def _mono():
+                nonlocal call_count
+                call_count += 1
+                if call_count <= 2:
+                    return 0.0  # start + first loop iter
+                return 100.0  # well past deadline AND >30s
+
+            mock_mono.side_effect = _mono
+            result = s._poll_for_datadome(tmp_path)
+
+        assert result == 1
+        mock_poison.assert_called_once_with(tmp_path)
+        err = capsys.readouterr().err
+        assert "poisoned" in err.lower()
+
+    def test_timeout_under_30s_does_not_poison(self, tmp_path, capsys):
+        from proxy_relay.warmup import WarmupSession
+
+        _make_cookies_db(tmp_path, with_datadome=False)
+        s = WarmupSession(profile_name="medellin", timeout=0.05, no_verify=True)
+        s._browser_handle = MagicMock()
+        s._browser_handle.process.poll.return_value = None
+
+        with (
+            patch("proxy_relay.warmup._DATADOME_POLL_INTERVAL", 0.01),
+            patch("proxy_relay.warmup.time.monotonic") as mock_mono,
+        ):
+            call_count = 0
+
+            def _mono():
+                nonlocal call_count
+                call_count += 1
+                if call_count <= 2:
+                    return 0.0
+                return 10.0  # past deadline but <30s
+
+            mock_mono.side_effect = _mono
+            result = s._poll_for_datadome(tmp_path)
+
+        assert result == 1
+        # No poisoned marker should exist
+        assert not (tmp_path / ".poisoned").exists()
+
+
+# ---------------------------------------------------------------------------
+# J-RL10: immutable=1 removed from warmup.py cookie poll
+# ---------------------------------------------------------------------------
+
+
+class TestCookiePollNoImmutable:
+    """J-RL10: warmup.py cookie poll uses mode=ro without immutable=1."""
+
+    def test_no_immutable_in_warmup_source(self):
+        import importlib.util
+        spec = importlib.util.find_spec("proxy_relay.warmup")
+        source = Path(spec.origin).read_text()
+        assert "immutable=1" not in source
