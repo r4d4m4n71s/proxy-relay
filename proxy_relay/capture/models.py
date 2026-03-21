@@ -6,9 +6,10 @@ from pathlib import Path
 
 # NOTE: Do NOT import from proxy_relay.config here — that would create a
 # circular import because config.py lazily imports CaptureConfig from this module.
-DEFAULT_CAPTURE_DIR: Path = Path.home() / ".config" / "proxy-relay" / "capture"
+DEFAULT_TELEMETRY_DIR: Path = Path.home() / ".config" / "proxy-relay" / "telemetry"
+DEFAULT_CAPTURE_DIR: Path = DEFAULT_TELEMETRY_DIR / "capture"
 DEFAULT_CAPTURE_DB: Path = DEFAULT_CAPTURE_DIR / "capture.db"
-DEFAULT_REPORT_DIR: Path = Path.home() / ".config" / "proxy-relay" / "reports"
+DEFAULT_REPORT_DIR: Path = DEFAULT_TELEMETRY_DIR / "reports"
 
 DEFAULT_CAPTURE_DOMAINS: frozenset[str] = frozenset({"tidal.com", "qobuz.com"})
 
@@ -110,8 +111,16 @@ class CaptureConfig:
         cdp_reconnect_max_delay_s: Upper bound on the inter-reconnect delay.
         rotate_db: If ``True``, rename the existing DB file before opening a new session
             so each session gets a fresh database (F-RL21).
+        min_rotate_kb: Skip rotation if the existing DB is smaller than this
+            threshold in KiB — near-empty captures from short sessions are
+            overwritten instead of archived.
         max_db_size_mb: Purge rotated DBs larger than this size in MiB (F-RL23).
         max_db_age_days: Purge rotated DBs older than this many days (F-RL23).
+        max_db_count: Keep at most this many rotated DBs per profile.  When
+            exceeded, the oldest files are deleted first.  0 means unlimited.
+        max_report_count: Keep at most this many report files.  Oldest are
+            deleted first when exceeded.  0 means unlimited.
+        max_report_age_days: Purge report files older than this many days.
     """
 
     db_path: Path | None = None
@@ -133,8 +142,13 @@ class CaptureConfig:
     cdp_reconnect_max_delay_s: float = 60.0
     # DB rotation and purge (F-RL21/F-RL23)
     rotate_db: bool = True
+    min_rotate_kb: int = 256
     max_db_size_mb: int = 500
-    max_db_age_days: int = 30
+    max_db_age_days: int = 7
+    max_db_count: int = 20
+    # Report purge
+    max_report_count: int = 20
+    max_report_age_days: int = 30
 
     def resolved_db_path(self) -> Path:
         """Return the effective database path, falling back to DEFAULT_CAPTURE_DB."""

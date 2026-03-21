@@ -445,7 +445,8 @@ class TestCaptureSession:
 
         # Report directory should have been created with a .md file
         assert report_dir.exists()
-        reports = list(report_dir.glob("capture-report-*.md"))
+        # Match both new pattern (*.report.md) and legacy (capture-report-*.md)
+        reports = list(report_dir.glob("*.report.md")) + list(report_dir.glob("capture-report-*.md"))
         assert len(reports) == 1
         assert "Capture Analysis Report" in reports[0].read_text()
 
@@ -541,22 +542,54 @@ class TestCaptureSessionDbRotation:
         from proxy_relay.capture.models import CaptureConfig
 
         db_path = tmp_path / "capture.db"
-        db_path.write_text("old data")  # simulate pre-existing DB
+        db_path.write_bytes(b"x" * 1024 * 300)  # 300 KB — above default min_rotate_kb
 
         mock_cdp = AsyncMock()
         mock_cdp._recv_task = None
         mock_writer = MagicMock()
 
-        session = CaptureSession(config=CaptureConfig(db_path=db_path, rotate_db=True))
+        session = CaptureSession(
+            config=CaptureConfig(db_path=db_path, rotate_db=True),
+            profile="medellin",
+        )
 
         with patch("proxy_relay.capture.CdpClient", return_value=mock_cdp), \
              patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer):
             await session.start(9222)
 
-        # Original path must no longer be the "old data" file
-        rotated = list(tmp_path.glob("capture-*.db"))
+        # New naming: {profile}-{timestamp}.capture.db
+        rotated = list(tmp_path.glob("medellin-*.capture.db"))
         assert len(rotated) == 1, "Exactly one rotated DB file expected"
-        assert rotated[0].read_text() == "old data"
+        assert len(rotated[0].read_bytes()) == 1024 * 300
+
+    async def test_small_db_skips_rotation(self, tmp_path):
+        """DB smaller than min_rotate_kb is overwritten, not archived."""
+        import sqlite3
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        db_path = tmp_path / "capture.db"
+        # Create a valid but small SQLite file (well below 256 KB)
+        conn = sqlite3.connect(str(db_path))
+        conn.close()
+
+        mock_cdp = AsyncMock()
+        mock_cdp._recv_task = None
+        mock_writer = MagicMock()
+
+        session = CaptureSession(
+            config=CaptureConfig(db_path=db_path, rotate_db=True, min_rotate_kb=256),
+            profile="miami",
+        )
+
+        with patch("proxy_relay.capture.CdpClient", return_value=mock_cdp), \
+             patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer):
+            await session.start(9222)
+
+        rotated = list(tmp_path.glob("*.capture.db"))
+        assert len(rotated) == 0, "Small DB must not be rotated"
 
     async def test_no_db_present_does_not_raise(self, tmp_path):
         from unittest.mock import AsyncMock, MagicMock, patch
@@ -599,8 +632,10 @@ class TestCaptureSessionDbRotation:
              patch("proxy_relay.capture.BackgroundWriter", return_value=mock_writer):
             await session.start(9222)
 
-        rotated = list(tmp_path.glob("capture-*.db"))
-        assert len(rotated) == 0, "rotate_db=False must not create any rotated files"
+        rotated_legacy = list(tmp_path.glob("capture-*.db"))
+        rotated_new = list(tmp_path.glob("*.capture.db"))
+        assert len(rotated_legacy) == 0, "rotate_db=False must not create any rotated files"
+        assert len(rotated_new) == 0, "rotate_db=False must not create any rotated files"
 
 
 # ---------------------------------------------------------------------------
@@ -609,7 +644,7 @@ class TestCaptureSessionDbRotation:
 
 
 class TestPurgeOldDbs:
-    """Verify _purge_old_dbs deletes files by age and size (F-RL23)."""
+    """Verify _purge_old_dbs deletes files by age, size, and count."""
 
     def _make_session(self, tmp_path, **cfg_kwargs):
         from proxy_relay.capture import CaptureSession
@@ -618,25 +653,38 @@ class TestPurgeOldDbs:
         cfg = CaptureConfig(db_path=tmp_path / "capture.db", **cfg_kwargs)
         return CaptureSession(config=cfg)
 
-    def test_purges_file_older_than_max_age(self, tmp_path):
+    def test_purges_legacy_file_older_than_max_age(self, tmp_path):
+        import os
         import time
 
         session = self._make_session(tmp_path, max_db_age_days=1, max_db_size_mb=999)
 
         old_db = tmp_path / "capture-20240101T000000.db"
         old_db.write_text("old")
-        # Make it appear very old
         old_mtime = time.time() - (2 * 86400)  # 2 days ago
-        import os
         os.utime(old_db, (old_mtime, old_mtime))
 
         session._purge_old_dbs(tmp_path)
-        assert not old_db.exists(), "File older than max_db_age_days must be deleted"
+        assert not old_db.exists(), "Legacy file older than max_db_age_days must be deleted"
+
+    def test_purges_new_pattern_file_older_than_max_age(self, tmp_path):
+        import os
+        import time
+
+        session = self._make_session(tmp_path, max_db_age_days=1, max_db_size_mb=999)
+
+        old_db = tmp_path / "medellin-20240101T000000.capture.db"
+        old_db.write_text("old")
+        old_mtime = time.time() - (2 * 86400)
+        os.utime(old_db, (old_mtime, old_mtime))
+
+        session._purge_old_dbs(tmp_path)
+        assert not old_db.exists(), "New-pattern file older than max_db_age_days must be deleted"
 
     def test_does_not_purge_recent_file(self, tmp_path):
         session = self._make_session(tmp_path, max_db_age_days=30, max_db_size_mb=999)
 
-        recent_db = tmp_path / "capture-20991231T000000.db"
+        recent_db = tmp_path / "medellin-20991231T000000.capture.db"
         recent_db.write_text("recent")
 
         session._purge_old_dbs(tmp_path)
@@ -645,14 +693,14 @@ class TestPurgeOldDbs:
     def test_purges_file_exceeding_size_limit(self, tmp_path):
         session = self._make_session(tmp_path, max_db_age_days=999, max_db_size_mb=0)
 
-        big_db = tmp_path / "capture-20991231T120000.db"
-        big_db.write_bytes(b"x" * 100)  # any non-zero file > 0 MB cap
+        big_db = tmp_path / "miami-20991231T120000.capture.db"
+        big_db.write_bytes(b"x" * 100)
 
         session._purge_old_dbs(tmp_path)
         assert not big_db.exists(), "File exceeding max_db_size_mb must be deleted"
 
-    def test_only_matches_rotated_db_pattern(self, tmp_path):
-        """Files not matching capture-*.db pattern must be left alone."""
+    def test_only_matches_rotated_db_patterns(self, tmp_path):
+        """Files not matching either pattern must be left alone."""
         session = self._make_session(tmp_path, max_db_age_days=0, max_db_size_mb=0)
 
         other = tmp_path / "other.db"
@@ -666,3 +714,142 @@ class TestPurgeOldDbs:
         session = self._make_session(tmp_path, max_db_age_days=1, max_db_size_mb=1)
         non_existent = tmp_path / "no-such-dir"
         session._purge_old_dbs(non_existent)  # Must not raise
+
+    def test_max_db_count_deletes_oldest(self, tmp_path):
+        """When rotated files exceed max_db_count, oldest are deleted."""
+        import os
+        import time
+
+        session = self._make_session(
+            tmp_path, max_db_age_days=999, max_db_size_mb=999, max_db_count=2,
+        )
+
+        now = time.time()
+        oldest = tmp_path / "medellin-20240101T000000.capture.db"
+        middle = tmp_path / "medellin-20240601T000000.capture.db"
+        newest = tmp_path / "medellin-20250101T000000.capture.db"
+
+        for i, f in enumerate([oldest, middle, newest]):
+            f.write_text(f"data-{i}")
+            os.utime(f, (now - (300 - i * 100), now - (300 - i * 100)))
+
+        session._purge_old_dbs(tmp_path)
+
+        assert not oldest.exists(), "Oldest file must be deleted to enforce count limit"
+        assert middle.exists(), "Second-newest must survive"
+        assert newest.exists(), "Newest must survive"
+
+    def test_max_db_count_zero_means_unlimited(self, tmp_path):
+        """max_db_count=0 disables count-based purge."""
+        session = self._make_session(
+            tmp_path, max_db_age_days=999, max_db_size_mb=999, max_db_count=0,
+        )
+
+        for i in range(5):
+            (tmp_path / f"miami-2024010{i}T000000.capture.db").write_text(f"data-{i}")
+
+        session._purge_old_dbs(tmp_path)
+
+        remaining = list(tmp_path.glob("*.capture.db"))
+        assert len(remaining) == 5, "max_db_count=0 must not delete any files"
+
+    def test_count_purge_mixed_patterns(self, tmp_path):
+        """Count-based purge works across both legacy and new patterns."""
+        import os
+        import time
+
+        session = self._make_session(
+            tmp_path, max_db_age_days=999, max_db_size_mb=999, max_db_count=1,
+        )
+
+        now = time.time()
+        legacy = tmp_path / "capture-20240101T000000.db"
+        new_fmt = tmp_path / "medellin-20250101T000000.capture.db"
+
+        legacy.write_text("legacy")
+        os.utime(legacy, (now - 200, now - 200))
+        new_fmt.write_text("new")
+        os.utime(new_fmt, (now - 100, now - 100))
+
+        session._purge_old_dbs(tmp_path)
+
+        assert not legacy.exists(), "Older legacy file must be deleted"
+        assert new_fmt.exists(), "Newer file must survive"
+
+
+# ---------------------------------------------------------------------------
+# Report purge
+# ---------------------------------------------------------------------------
+
+
+class TestPurgeOldReports:
+    """Verify _purge_old_reports deletes reports by age and count."""
+
+    def _make_session(self, tmp_path, **cfg_kwargs):
+        from proxy_relay.capture import CaptureSession
+        from proxy_relay.capture.models import CaptureConfig
+
+        cfg = CaptureConfig(db_path=tmp_path / "capture.db", **cfg_kwargs)
+        return CaptureSession(config=cfg)
+
+    def test_purges_report_older_than_max_age(self, tmp_path):
+        import os
+        import time
+
+        session = self._make_session(tmp_path, max_report_age_days=1)
+
+        old_report = tmp_path / "medellin-20240101-120000.report.md"
+        old_report.write_text("old report")
+        old_mtime = time.time() - (2 * 86400)
+        os.utime(old_report, (old_mtime, old_mtime))
+
+        session._purge_old_reports(tmp_path)
+        assert not old_report.exists(), "Report older than max_report_age_days must be deleted"
+
+    def test_purges_legacy_report_by_age(self, tmp_path):
+        import os
+        import time
+
+        session = self._make_session(tmp_path, max_report_age_days=1)
+
+        old_report = tmp_path / "capture-report-20240101-120000.md"
+        old_report.write_text("old report")
+        old_mtime = time.time() - (2 * 86400)
+        os.utime(old_report, (old_mtime, old_mtime))
+
+        session._purge_old_reports(tmp_path)
+        assert not old_report.exists(), "Legacy report older than max_report_age_days must be deleted"
+
+    def test_does_not_purge_recent_report(self, tmp_path):
+        session = self._make_session(tmp_path, max_report_age_days=30)
+
+        recent = tmp_path / "miami-20991231-120000.report.md"
+        recent.write_text("recent")
+
+        session._purge_old_reports(tmp_path)
+        assert recent.exists(), "Recently modified report must not be deleted"
+
+    def test_max_report_count_deletes_oldest(self, tmp_path):
+        import os
+        import time
+
+        session = self._make_session(tmp_path, max_report_age_days=999, max_report_count=2)
+
+        now = time.time()
+        oldest = tmp_path / "medellin-20240101-120000.report.md"
+        middle = tmp_path / "medellin-20240601-120000.report.md"
+        newest = tmp_path / "medellin-20250101-120000.report.md"
+
+        for i, f in enumerate([oldest, middle, newest]):
+            f.write_text(f"report-{i}")
+            os.utime(f, (now - (300 - i * 100), now - (300 - i * 100)))
+
+        session._purge_old_reports(tmp_path)
+
+        assert not oldest.exists(), "Oldest report must be deleted"
+        assert middle.exists(), "Second-newest must survive"
+        assert newest.exists(), "Newest must survive"
+
+    def test_missing_directory_does_not_raise(self, tmp_path):
+        session = self._make_session(tmp_path, max_report_age_days=1)
+        session._purge_old_reports(tmp_path / "no-such-dir")  # Must not raise

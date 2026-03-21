@@ -370,7 +370,7 @@ class TestCaptureConfigRotationDefaults:
         from proxy_relay.capture.models import CaptureConfig
 
         cfg = CaptureConfig()
-        assert cfg.max_db_age_days == 30
+        assert cfg.max_db_age_days == 7
 
     def test_can_disable_rotate_db(self):
         from proxy_relay.capture.models import CaptureConfig

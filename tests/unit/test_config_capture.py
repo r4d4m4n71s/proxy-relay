@@ -120,6 +120,38 @@ class TestConfigCaptureSection:
         assert cfg.capture is not None
         assert cfg.capture.db_path == Path(db_path)
 
+    def test_config_capture_rotation_fields(self, tmp_path):
+        """[capture] rotation and purge fields are parsed correctly."""
+        from proxy_relay.config import RelayConfig
+
+        path = tmp_path / "config.toml"
+        path.write_text(
+            '[capture]\n'
+            'min_rotate_kb = 512\n'
+            'max_db_age_days = 3\n'
+            'max_db_size_mb = 100\n'
+            'max_db_count = 10\n'
+            + _PROFILES_SECTION
+        )
+        cfg = RelayConfig.load(path)
+        assert cfg.capture is not None
+        assert cfg.capture.min_rotate_kb == 512
+        assert cfg.capture.max_db_age_days == 3
+        assert cfg.capture.max_db_size_mb == 100
+        assert cfg.capture.max_db_count == 10
+
+    def test_config_capture_rotation_defaults(self, tmp_path):
+        """[capture] without rotation fields uses CaptureConfig defaults."""
+        from proxy_relay.config import RelayConfig
+
+        path = tmp_path / "config.toml"
+        path.write_text('[capture]\n' + _PROFILES_SECTION)
+        cfg = RelayConfig.load(path)
+        assert cfg.capture is not None
+        assert cfg.capture.min_rotate_kb == 256
+        assert cfg.capture.max_db_age_days == 7
+        assert cfg.capture.max_db_count == 20
+
     def test_config_parse_config_dict_without_capture(self):
         """_parse_config({}) must produce capture=None, not an error."""
         from proxy_relay.config import _parse_config

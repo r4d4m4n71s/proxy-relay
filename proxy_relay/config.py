@@ -79,7 +79,13 @@ warn_timezone_mismatch = true               # Warn if system TZ != proxy country
 # max_body_bytes = 65536                    # Max request/response body stored
 # cookie_poll_interval_s = 30.0            # Seconds between cookie snapshots
 # storage_poll_interval_s = 60.0           # Seconds between localStorage polls
-# report_dir = "~/.config/proxy-relay"     # Directory for capture reports
+# report_dir = "~/.config/proxy-relay/telemetry/reports"  # Directory for capture reports
+# min_rotate_kb = 256                      # Skip rotation if DB < this size (KiB)
+# max_db_age_days = 7                      # Purge rotated DBs older than N days
+# max_db_size_mb = 500                     # Purge rotated DBs larger than N MiB
+# max_db_count = 20                        # Keep at most N rotated DBs per profile
+# max_report_count = 20                    # Keep at most N report files
+# max_report_age_days = 30                 # Purge report files older than N days
 
 # =============================================================================
 # [profiles] — Per-profile settings
@@ -502,6 +508,12 @@ def _parse_config(data: dict) -> RelayConfig:
             report_dir=report_dir,
             auto_analyze=bool(capture_data.get("auto_analyze", True)),
             auto_report=bool(capture_data.get("auto_report", False)),
+            min_rotate_kb=int(capture_data.get("min_rotate_kb", 256)),
+            max_db_age_days=int(capture_data.get("max_db_age_days", 7)),
+            max_db_size_mb=int(capture_data.get("max_db_size_mb", 500)),
+            max_db_count=int(capture_data.get("max_db_count", 20)),
+            max_report_count=int(capture_data.get("max_report_count", 20)),
+            max_report_age_days=int(capture_data.get("max_report_age_days", 30)),
         )
 
     # [profiles] — require [profiles.default]

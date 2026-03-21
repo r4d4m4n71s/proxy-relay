@@ -251,13 +251,18 @@ def print_report(report: AnalysisReport) -> None:
     print()
 
 
-def write_report(report: AnalysisReport, output_dir: Path | None = None) -> Path:
+def write_report(
+    report: AnalysisReport,
+    output_dir: Path | None = None,
+    profile: str = "",
+) -> Path:
     """Write a detailed markdown report file.
 
     Args:
         report: The analysis report to write.
         output_dir: Directory for the report file.  Defaults to
             ``~/.config/proxy-relay/``.
+        profile: Profile name to include in the filename.
 
     Returns:
         Path to the written report file.
@@ -269,7 +274,8 @@ def write_report(report: AnalysisReport, output_dir: Path | None = None) -> Path
     output_dir.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    path = output_dir / f"capture-report-{ts}.md"
+    profile_tag = profile or "default"
+    path = output_dir / f"{profile_tag}-{ts}.report.md"
 
     lines: list[str] = []
     lines.append("# Capture Analysis Report")

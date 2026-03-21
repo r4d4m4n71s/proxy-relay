@@ -189,12 +189,26 @@ class CaptureSession:
             if self._config.rotate_db and db_path_resolved.exists():
                 from datetime import UTC, datetime  # noqa: PLC0415
 
-                ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-                rotated = db_path_resolved.parent / f"capture-{ts}.db"
-                db_path_resolved.rename(rotated)
-                log.info("Rotated capture DB to %s", rotated)
+                # Skip rotation if the existing DB is too small (near-empty session)
+                try:
+                    existing_size = db_path_resolved.stat().st_size
+                except OSError:
+                    existing_size = 0
+                min_size_bytes = self._config.min_rotate_kb * 1024
 
-                # F-RL23: purge old rotated DBs by age and size
+                if existing_size >= min_size_bytes:
+                    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+                    profile_tag = self._profile or "default"
+                    rotated = db_path_resolved.parent / f"{profile_tag}-{ts}.capture.db"
+                    db_path_resolved.rename(rotated)
+                    log.info("Rotated capture DB to %s", rotated)
+                else:
+                    log.debug(
+                        "Skipping rotation — capture DB below min_rotate_kb (%d KB < %d KB)",
+                        existing_size // 1024, self._config.min_rotate_kb,
+                    )
+
+                # F-RL23: purge old rotated DBs by age, size, and count
                 self._purge_old_dbs(db_path_resolved.parent)
 
             sqlite_store = SqliteStore(db_path=db_path_resolved, schema=PROXY_RELAY_SCHEMA)
@@ -463,11 +477,14 @@ class CaptureSession:
                             pass  # Object store may be empty or inaccessible
 
     def _purge_old_dbs(self, capture_dir: Any) -> None:
-        """Remove rotated capture DBs that exceed age or size limits (F-RL23).
+        """Remove rotated capture DBs that exceed age, size, or count limits.
 
-        Scans *capture_dir* for ``capture-*.db`` files and deletes those that
-        are either older than ``config.max_db_age_days`` days or larger than
-        ``config.max_db_size_mb`` MiB.
+        Scans *capture_dir* for rotated DB files (both legacy ``capture-*.db``
+        and new ``*.capture.db`` patterns) and:
+        1. Deletes files older than ``config.max_db_age_days`` or larger than
+           ``config.max_db_size_mb``.
+        2. If more than ``config.max_db_count`` files remain, deletes the
+           oldest until the count is within the limit.
 
         Args:
             capture_dir: Directory (Path) to scan for rotated DB files.
@@ -476,11 +493,23 @@ class CaptureSession:
         from pathlib import Path as _Path
 
         capture_dir = _Path(capture_dir)
+        if not capture_dir.is_dir():
+            return
+
         max_age_s = self._config.max_db_age_days * 86400
         max_size_b = self._config.max_db_size_mb * 1024 * 1024
         now = _time.time()
 
-        for db_file in capture_dir.glob("capture-*.db"):
+        # Collect rotated DBs: new pattern + legacy pattern
+        rotated: list[_Path] = []
+        rotated.extend(capture_dir.glob("*.capture.db"))
+        rotated.extend(capture_dir.glob("capture-*.db"))
+        # Deduplicate in case patterns overlap
+        rotated = list(dict.fromkeys(rotated))
+
+        # Pass 1: purge by age and size
+        surviving: list[tuple[float, _Path]] = []
+        for db_file in rotated:
             try:
                 stat = db_file.stat()
                 too_old = (now - stat.st_mtime) > max_age_s
@@ -489,8 +518,71 @@ class CaptureSession:
                     db_file.unlink()
                     reason = "age" if too_old else "size"
                     log.info("Purged rotated DB (%s): %s", reason, db_file.name)
+                else:
+                    surviving.append((stat.st_mtime, db_file))
             except OSError:
                 log.debug("Could not purge %s", db_file, exc_info=True)
+
+        # Pass 2: enforce max_db_count — delete oldest first
+        max_count = self._config.max_db_count
+        if max_count > 0 and len(surviving) > max_count:
+            surviving.sort(key=lambda t: t[0])  # oldest first
+            excess = surviving[: len(surviving) - max_count]
+            for _, db_file in excess:
+                try:
+                    db_file.unlink()
+                    log.info("Purged rotated DB (count): %s", db_file.name)
+                except OSError:
+                    log.debug("Could not purge %s", db_file, exc_info=True)
+
+    def _purge_old_reports(self, report_dir: Any) -> None:
+        """Remove old report files by age and count.
+
+        Scans *report_dir* for report files (both legacy ``capture-report-*.md``
+        and new ``*.report.md`` patterns) and purges by age and count.
+
+        Args:
+            report_dir: Directory (Path) to scan for report files.
+        """
+        import time as _time
+        from pathlib import Path as _Path
+
+        report_dir = _Path(report_dir)
+        if not report_dir.is_dir():
+            return
+
+        max_age_s = self._config.max_report_age_days * 86400
+        now = _time.time()
+
+        # Collect reports: new pattern + legacy pattern
+        reports: list[_Path] = []
+        reports.extend(report_dir.glob("*.report.md"))
+        reports.extend(report_dir.glob("capture-report-*.md"))
+        reports = list(dict.fromkeys(reports))
+
+        # Pass 1: purge by age
+        surviving: list[tuple[float, _Path]] = []
+        for report_file in reports:
+            try:
+                stat = report_file.stat()
+                if (now - stat.st_mtime) > max_age_s:
+                    report_file.unlink()
+                    log.info("Purged old report (age): %s", report_file.name)
+                else:
+                    surviving.append((stat.st_mtime, report_file))
+            except OSError:
+                log.debug("Could not purge %s", report_file, exc_info=True)
+
+        # Pass 2: enforce max_report_count
+        max_count = self._config.max_report_count
+        if max_count > 0 and len(surviving) > max_count:
+            surviving.sort(key=lambda t: t[0])
+            for _, report_file in surviving[: len(surviving) - max_count]:
+                try:
+                    report_file.unlink()
+                    log.info("Purged old report (count): %s", report_file.name)
+                except OSError:
+                    log.debug("Could not purge %s", report_file, exc_info=True)
 
     async def _reconnect_cdp(self) -> None:
         """Reconnect to CDP after an unexpected WebSocket disconnect.
@@ -719,10 +811,12 @@ class CaptureSession:
                 if self._config.auto_report:
                     from proxy_relay.capture.analyzer import write_report as _write_report
 
+                    report_dir = self._config.resolved_report_dir()
                     _path = _write_report(
-                        _report, output_dir=self._config.resolved_report_dir()
+                        _report, output_dir=report_dir, profile=self._profile,
                     )
                     log.info("Analysis report written to %s", _path)
+                    self._purge_old_reports(report_dir)
             except Exception:
                 log.debug("Post-capture analysis skipped", exc_info=True)
 
