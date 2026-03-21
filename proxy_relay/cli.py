@@ -11,10 +11,11 @@ from pathlib import Path
 from proxy_relay import __version__
 from proxy_relay import browse as _browse
 from proxy_relay import telemetry as _telemetry
-from proxy_relay.config import MonitorConfig, RelayConfig
+from proxy_relay.config import MonitorConfig, ProfileConfig, RelayConfig, resolve_blocked_domains
 from proxy_relay.profile_rules import (
     Remediation,
     BrowseContext,
+    TIDAL_DOMAINS,
     default_registry,
     execute_remediations,
     is_tidal_url,
@@ -75,13 +76,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--port",
         type=int,
         default=None,
-        help="Bind port (default: from config or 8080)",
+        help="Bind port (default: from profile config or 8080)",
     )
     start_parser.add_argument(
         "--profile",
         type=str,
-        default=None,
-        help="proxy-st profile name (default: from config or 'browse')",
+        required=True,
+        help="proxy-st profile name (required)",
     )
     start_parser.add_argument(
         "--config",
@@ -96,6 +97,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Log level (default: from config or INFO)",
     )
+    # Hidden flag: used by auto_start_server() to convey the session's target URL.
+    # When set to a TIDAL URL, the server auto-unblocks TIDAL domains in-memory.
+    start_parser.add_argument(
+        "--start-url",
+        type=str,
+        default="",
+        help=argparse.SUPPRESS,
+    )
 
     # stop subcommand
     stop_parser = subparsers.add_parser(
@@ -105,8 +114,8 @@ def build_parser() -> argparse.ArgumentParser:
     stop_parser.add_argument(
         "--profile",
         type=str,
-        default=None,
-        help="proxy-st profile name (default: 'browse')",
+        required=True,
+        help="proxy-st profile name (required)",
     )
 
     # status subcommand
@@ -124,14 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--profile",
         type=str,
         default=None,
-        help="proxy-st profile name (default: 'browse')",
-    )
-    status_parser.add_argument(
-        "--all",
-        action="store_true",
-        dest="show_all",
-        default=False,
-        help="Show status of all profiles (scans all status files)",
+        help="proxy-st profile name (optional filter; default: show all)",
     )
 
     # rotate subcommand
@@ -142,8 +144,8 @@ def build_parser() -> argparse.ArgumentParser:
     rotate_parser.add_argument(
         "--profile",
         type=str,
-        default=None,
-        help="proxy-st profile name (default: 'browse')",
+        required=True,
+        help="proxy-st profile name (required)",
     )
 
     # profile-clean subcommand
@@ -172,13 +174,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--rotate-min",
         type=int,
         default=None,
-        help="Auto-rotate interval in minutes (default: from config or 30)",
+        help="Auto-rotate interval in minutes (default: from profile config or 30)",
     )
     browse_parser.add_argument(
         "--profile",
         type=str,
-        default=None,
-        help="proxy-st profile name (overrides config file setting)",
+        required=True,
+        help="proxy-st profile name (required)",
     )
     browse_parser.add_argument(
         "--no-rotate",
@@ -196,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--browser",
         type=str,
         default=None,
-        help="Chromium-based browser binary name or path (default: auto-detect)",
+        help="Chromium-based browser binary name or path (default: from profile or auto-detect)",
     )
     browse_parser.add_argument(
         "--capture",
@@ -222,7 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         metavar="URL",
-        help="URL to open on browser launch (default: browser new-tab page).",
+        help="URL to open on browser launch (default: from profile or browser new-tab page).",
     )
     browse_parser.add_argument(
         "--account",
@@ -237,6 +239,44 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Log level override (default: from config or INFO).",
+    )
+
+    # block subcommand
+    block_parser = subparsers.add_parser(
+        "block",
+        help="Add domains to a profile's block list in config.toml",
+    )
+    block_parser.add_argument(
+        "--profile",
+        type=str,
+        required=True,
+        help="proxy-st profile name (required)",
+    )
+    block_parser.add_argument(
+        "--domains",
+        type=str,
+        required=True,
+        metavar="DOMAINS",
+        help="Comma-separated list of domains to block (e.g. example.com,other.com)",
+    )
+
+    # unblock subcommand
+    unblock_parser = subparsers.add_parser(
+        "unblock",
+        help="Remove domains from a profile's block list in config.toml",
+    )
+    unblock_parser.add_argument(
+        "--profile",
+        type=str,
+        required=True,
+        help="proxy-st profile name (required)",
+    )
+    unblock_parser.add_argument(
+        "--domains",
+        type=str,
+        required=True,
+        metavar="DOMAINS",
+        help="Comma-separated list of domains to unblock (e.g. tidal.com,listen.tidal.com)",
     )
 
     # ── analyze ────────────────────────────────────────────────────────
@@ -302,9 +342,29 @@ def _cmd_start(args: argparse.Namespace) -> int:
         )
         return 1
 
+    profile_name: str = args.profile
+
+    # Resolve profile from config (log warning if not found, use default values)
+    profile: ProfileConfig = config.profiles.get(
+        profile_name, config.profiles["default"]
+    )
+    if profile_name not in config.profiles:
+        log.warning(
+            "Profile %r not found in config — using [profiles.default] values",
+            profile_name,
+        )
+
+    # Port precedence: CLI flag > profile.port > default profile port
     host = config.server.host if args.host is None else args.host
-    port = config.server.port if args.port is None else args.port
-    profile_name = args.profile or config.default_proxy_profile
+    port = args.port if args.port is not None else profile.port
+
+    # Effective start_url: hidden CLI flag (from auto_start_server) or empty
+    start_url: str = getattr(args, "start_url", "") or ""
+
+    # Resolve blocked domains (TIDAL auto-unblocked if start_url is TIDAL)
+    blocked_domains = resolve_blocked_domains(profile, start_url)
+    if blocked_domains:
+        log.info("Domain blocking active: %s", ", ".join(sorted(blocked_domains)))
 
     # Check for existing instance of this profile
     pid = read_pid(pid_path_for(profile_name))
@@ -333,8 +393,18 @@ def _cmd_start(args: argparse.Namespace) -> int:
 
     # Run the server
     monitor_config = config.monitor
+    effective_config_path = config_path
     try:
-        asyncio.run(_run(host, port, profile_name, monitor_config))
+        asyncio.run(
+            _run(
+                host,
+                port,
+                profile_name,
+                monitor_config,
+                blocked_domains=blocked_domains,
+                config_path=effective_config_path,
+            )
+        )
     except KeyboardInterrupt:
         log.info("Interrupted by user")
     except ProxyRelayError as exc:
@@ -360,6 +430,8 @@ async def _run(
     port: int,
     profile_name: str,
     monitor_config: MonitorConfig | None = None,
+    blocked_domains: frozenset[str] | None = None,
+    config_path: Path | None = None,
 ) -> None:
     """Create and run the proxy server.
 
@@ -372,6 +444,8 @@ async def _run(
         port: Bind port.
         profile_name: proxy-st profile name.
         monitor_config: Optional monitor configuration.
+        blocked_domains: Optional set of domains to block at the handler level.
+        config_path: Optional config file path for SIGUSR2 reload.
     """
     import errno
 
@@ -386,6 +460,8 @@ async def _run(
             upstream_manager=manager,
             monitor_config=monitor_config,
             profile_name=profile_name,
+            blocked_domains=blocked_domains,
+            config_path=config_path,
         )
         try:
             await server.start()
@@ -419,7 +495,7 @@ def _cmd_stop(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success, non-zero for error).
     """
-    profile = args.profile or "browse"
+    profile = args.profile
     pid_path = pid_path_for(profile)
 
     pid = read_pid(pid_path)
@@ -458,7 +534,8 @@ def _cmd_stop(args: argparse.Namespace) -> int:
 def _cmd_status(args: argparse.Namespace) -> int:
     """Execute the 'status' subcommand.
 
-    Reads the PID file and status file, displays server information.
+    When --profile is not given, shows all profiles (scans all status files).
+    When --profile is given, shows only that profile.
 
     Args:
         args: Parsed command-line arguments.
@@ -466,18 +543,19 @@ def _cmd_status(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success, non-zero for error).
     """
-    # F-RL26: --all shows status for all profiles
-    if getattr(args, "show_all", False):
+    profile_filter = args.profile  # None = show all
+
+    if profile_filter is None:
         return _cmd_status_all(args)
 
-    profile = args.profile or "browse"
-    running, pid, status_data = read_status_if_alive(profile)
+    # Single-profile display
+    running, pid, status_data = read_status_if_alive(profile_filter)
 
     if args.json_output:
         output: dict = {
             "running": running,
             "pid": pid,
-            "profile": profile,
+            "profile": profile_filter,
         }
         if status_data is not None:
             output.update(status_data)
@@ -489,10 +567,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
         state = "not running"
         if pid is not None:
             state = f"not running (stale PID {pid})"
-        print(f"proxy-relay [{profile}]: {state}")
+        print(f"proxy-relay [{profile_filter}]: {state}")
         return 1
 
-    print(f"proxy-relay [{profile}]: running (PID {pid})")
+    print(f"proxy-relay [{profile_filter}]: running (PID {pid})")
 
     if status_data is not None:
         host = status_data.get("host", "?")
@@ -522,7 +600,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_status_all(args: argparse.Namespace) -> int:
-    """Show status for all profiles (F-RL26).
+    """Show status for all profiles.
 
     Args:
         args: Parsed command-line arguments.
@@ -554,7 +632,10 @@ def _cmd_status_all(args: argparse.Namespace) -> int:
             country = s.get("country", "?")
             active = s.get("active_connections", "?")
             total = s.get("total_connections", "?")
-            print(f"  [{profile}] running (PID {pid}) — {host}:{port}, country={country}, conn={active}/{total}")
+            print(
+                f"  [{profile}] running (PID {pid}) — "
+                f"{host}:{port}, country={country}, conn={active}/{total}"
+            )
         else:
             print(f"  [{profile}] not running (stale, cleaned up)")
 
@@ -572,7 +653,7 @@ def _cmd_rotate(args: argparse.Namespace) -> int:
     Returns:
         Exit code (0 for success, non-zero for error).
     """
-    profile = args.profile or "browse"
+    profile = args.profile
     pid = read_pid(pid_path_for(profile))
     if pid is None:
         print(
@@ -658,9 +739,19 @@ def _cmd_browse(args: argparse.Namespace) -> int:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
 
-    profile_name = args.profile or config.default_proxy_profile
+    profile_name: str = args.profile
     log_level = getattr(args, "log_level", None) or config.log_level
     configure_logging(log_level)
+
+    # Resolve profile from config
+    profile: ProfileConfig = config.profiles.get(
+        profile_name, config.profiles["default"]
+    )
+    if profile_name not in config.profiles:
+        log.warning(
+            "Profile %r not found in config — using [profiles.default] values",
+            profile_name,
+        )
 
     # Validate --rotate-min before doing any work (E-RL15).
     if args.rotate_min is not None and args.rotate_min < 0:
@@ -682,7 +773,11 @@ def _cmd_browse(args: argparse.Namespace) -> int:
             )
             return 1
 
-    # 2. Check if a server is already running for this profile
+    # 2. Effective settings: CLI flag > profile config
+    effective_start_url: str = getattr(args, "start_url", None) or profile.start_url
+    effective_browser: str | None = getattr(args, "browser", None) or profile.browser or None
+
+    # 3. Check if a server is already running for this profile
     auto_started = False
     server_proc = None
     pid = read_pid(pid_path_for(profile_name))
@@ -692,12 +787,19 @@ def _cmd_browse(args: argparse.Namespace) -> int:
         status_data = read_status(status_path_for(profile_name))
         if status_data is not None:
             host = status_data.get("host", config.server.host)
-            port = status_data.get("port", config.server.port)
+            port = status_data.get("port", profile.port)
         else:
             host = config.server.host
-            port = config.server.port
+            port = profile.port
         relay_pid = pid
         print(f"Using existing server for profile {profile_name!r} (PID {pid})")
+        if is_tidal_url(effective_start_url):
+            print(
+                "Warning: reusing existing server — TIDAL domain unblocking for this session "
+                "requires a new server start with --start-url. "
+                "Stop the server first if TIDAL access is blocked.",
+                file=sys.stderr,
+            )
     else:
         # No server running — auto-start one
         auto_started = True
@@ -706,8 +808,9 @@ def _cmd_browse(args: argparse.Namespace) -> int:
             server_proc = _browse.auto_start_server(
                 profile_name,
                 host=config.server.host,
-                config_path=Path(args.config) if args.config else None,
+                config_path=config_path,
                 log_level=log_level,
+                start_url=effective_start_url,
             )
             host, port = _browse.wait_for_server_ready(profile_name, server_proc)
             relay_pid = server_proc.pid
@@ -729,11 +832,10 @@ def _cmd_browse(args: argparse.Namespace) -> int:
             print(f"\nHealth check failed:\n  {exc}\n", file=sys.stderr)
             return 1
 
-        # 4. Find browser (CLI --browser > config browser > auto-detect)
-        browser_override = getattr(args, "browser", None) or config.browse.browser or None
+        # 4. Find browser (CLI --browser > profile.browser > auto-detect)
         try:
-            if browser_override:
-                chromium_path = _browse.resolve_browser(browser_override)
+            if effective_browser:
+                chromium_path = _browse.resolve_browser(effective_browser)
             else:
                 chromium_path = _browse.find_chromium()
             log.info("Found browser at %s", chromium_path)
@@ -762,9 +864,8 @@ def _cmd_browse(args: argparse.Namespace) -> int:
 
         # 5b. Profile validation (TIDAL sessions only)
         account_email = getattr(args, "account", None)
-        start_url_for_check = getattr(args, "start_url", None)
 
-        if is_tidal_url(start_url_for_check):
+        if is_tidal_url(effective_start_url):
             try:
                 run_id = _telemetry.new_run_id()
                 ctx = BrowseContext(
@@ -785,7 +886,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
                     country=country,
                     lang=proxy_lang or "",
                     timezone=proxy_tz or "",
-                    url=start_url_for_check or "",
+                    url=effective_start_url or "",
                 )
 
                 results = default_registry().evaluate_all(ctx)
@@ -869,13 +970,13 @@ def _cmd_browse(args: argparse.Namespace) -> int:
                 log.warning("Profile validation failed (non-fatal): %s", exc)
                 print(f"Warning: profile validation error — {exc}", file=sys.stderr)
 
-        # 6. Resolve rotation interval
+        # 6. Resolve rotation interval (CLI > no-rotate > profile > default)
         if args.no_rotate:
             rotate_min = 0
         elif args.rotate_min is not None:
             rotate_min = args.rotate_min
         else:
-            rotate_min = config.browse.rotate_interval_min
+            rotate_min = profile.rotate_interval_min
 
         # 7. Optionally create capture session
         capture_session = None
@@ -923,7 +1024,7 @@ def _cmd_browse(args: argparse.Namespace) -> int:
             timezone=proxy_tz,
             lang=proxy_lang,
             capture_session=capture_session,
-            start_url=getattr(args, "start_url", None),
+            start_url=effective_start_url or None,
         )
 
         if rotate_min > 0:
@@ -938,6 +1039,145 @@ def _cmd_browse(args: argparse.Namespace) -> int:
         # 9. Auto-stop server if we started it
         if auto_started and server_proc is not None:
             _browse.auto_stop_server(server_proc, profile_name)
+
+
+def _cmd_block(args: argparse.Namespace) -> int:
+    """Add domains to a profile's block list in config.toml, then signal server.
+
+    Reads the current config.toml via tomlkit (preserves comments/formatting),
+    computes the union of existing + new domains, writes back, and sends SIGUSR2
+    to the running server (if any) to reload the config in-memory.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        Exit code (0 for success, non-zero for error).
+    """
+    return _modify_blocked_domains(args, operation="block")
+
+
+def _cmd_unblock(args: argparse.Namespace) -> int:
+    """Remove domains from a profile's block list in config.toml, then signal server.
+
+    Reads the current config.toml via tomlkit (preserves comments/formatting),
+    computes the difference of existing - specified domains, writes back, and
+    sends SIGUSR2 to the running server (if any) to reload the config in-memory.
+    Creates [profiles.<name>] section if it doesn't exist.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        Exit code (0 for success, non-zero for error).
+    """
+    return _modify_blocked_domains(args, operation="unblock")
+
+
+def _modify_blocked_domains(
+    args: argparse.Namespace,
+    operation: str,  # "block" | "unblock"
+) -> int:
+    """Shared implementation for block and unblock commands.
+
+    Args:
+        args: Parsed command-line arguments (profile, domains).
+        operation: "block" to add domains, "unblock" to remove them.
+
+    Returns:
+        Exit code (0 for success, non-zero for error).
+    """
+    import tomlkit
+
+    from proxy_relay.config import CONFIG_PATH
+
+    profile_name: str = args.profile
+    raw_domains: str = args.domains
+    target_domains = frozenset(d.strip() for d in raw_domains.split(",") if d.strip())
+
+    if not target_domains:
+        print("No valid domains specified.", file=sys.stderr)
+        return 1
+
+    config_path = CONFIG_PATH
+
+    # Read config.toml via tomlkit to preserve comments and formatting
+    try:
+        raw_text = config_path.read_text(encoding="utf-8")
+        doc = tomlkit.parse(raw_text)
+    except FileNotFoundError:
+        print(f"Config file not found: {config_path}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"Failed to read config: {exc}", file=sys.stderr)
+        return 1
+
+    # Navigate to [profiles] table, creating if needed
+    if "profiles" not in doc:
+        doc.add("profiles", tomlkit.table())
+
+    profiles_table = doc["profiles"]
+
+    # Determine current blocked_domains for this profile (with inheritance)
+    # We need to read them from the TOML structure, not from ProfileConfig,
+    # because we want to know what's currently written for this profile.
+    if profile_name in profiles_table:
+        profile_section = profiles_table[profile_name]
+        current_raw = profile_section.get("blocked_domains", None)
+    else:
+        profile_section = None
+        current_raw = None
+
+    # If no explicit blocked_domains on this profile, inherit from default
+    if current_raw is None:
+        default_section = profiles_table.get("default", {})
+        current_raw = default_section.get("blocked_domains", [])
+
+    current_domains: set[str] = set(current_raw) if current_raw else set()
+
+    # Compute new domain set
+    if operation == "block":
+        new_domains = current_domains | target_domains
+        verb = "Blocked"
+    else:  # unblock
+        new_domains = current_domains - target_domains
+        verb = "Unblocked"
+
+    # Create [profiles.<name>] section if it doesn't exist
+    if profile_name not in profiles_table:
+        new_section = tomlkit.table()
+        profiles_table.add(profile_name, new_section)
+
+    # Write updated blocked_domains to profile section
+    blocked_list = tomlkit.array()
+    for domain in sorted(new_domains):
+        blocked_list.append(domain)
+    profiles_table[profile_name]["blocked_domains"] = blocked_list
+
+    # Write back to config.toml
+    try:
+        config_path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    except OSError as exc:
+        print(f"Failed to write config: {exc}", file=sys.stderr)
+        return 1
+
+    # Print confirmation
+    changed = sorted(target_domains)
+    remaining = sorted(new_domains)
+    print(f"{verb}: {', '.join(changed)}")
+    print(f"Profile [{profile_name}] blocked_domains: {remaining if remaining else '(none)'}")
+
+    # Signal running server to reload config (if any)
+    pid = read_pid(pid_path_for(profile_name))
+    if pid is not None and is_process_running(pid):
+        if send_signal(pid, signal.SIGUSR2):
+            print(f"Sent SIGUSR2 to server (PID {pid}) — blocked domains reloaded")
+        else:
+            print(f"Warning: failed to send SIGUSR2 to PID {pid}", file=sys.stderr)
+    else:
+        print(f"Server not running for profile {profile_name!r} — changes take effect on next start")
+
+    return 0
 
 
 def _cmd_analyze(args: argparse.Namespace) -> int:
@@ -1009,6 +1249,8 @@ def main() -> None:
         "rotate": _cmd_rotate,
         "profile-clean": _cmd_profile_clean,
         "browse": _cmd_browse,
+        "block": _cmd_block,
+        "unblock": _cmd_unblock,
         "analyze": _cmd_analyze,
     }
 

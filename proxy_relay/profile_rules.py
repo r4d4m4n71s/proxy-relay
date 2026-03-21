@@ -30,7 +30,7 @@ _WARMUP_META_FILE = ".warmup-meta.json"
 _POISONED_FILE = ".poisoned"
 _CHROMIUM_EPOCH_OFFSET = 11_644_473_600  # seconds between 1601-01-01 and 1970-01-01
 
-_TIDAL_DOMAINS = frozenset({"tidal.com", "listen.tidal.com", "login.tidal.com"})
+TIDAL_DOMAINS = frozenset({"tidal.com", "listen.tidal.com", "login.tidal.com"})
 
 # ---------------------------------------------------------------------------
 # Enums and dataclasses
@@ -528,17 +528,20 @@ def read_warmup_meta(profile_dir: Path) -> dict | None:
 
 
 def is_tidal_url(url: str | None) -> bool:
-    """Return True if url targets a TIDAL domain, or if url is None (default session).
+    """Return True if *url* explicitly targets a TIDAL domain.
+
+    Returns False when *url* is None (no ``--start-url`` given), so
+    TIDAL-specific validation is skipped for general browsing sessions.
 
     Args:
         url: URL string to check, or None.
 
     Returns:
-        True if the URL is TIDAL-related or None (default browse session).
+        True only if the URL contains a known TIDAL domain.
     """
     if not url:
-        return True
-    return any(domain in url for domain in _TIDAL_DOMAINS)
+        return False
+    return any(domain in url for domain in TIDAL_DOMAINS)
 
 
 # ---------------------------------------------------------------------------

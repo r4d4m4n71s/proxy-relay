@@ -9,8 +9,9 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
+from pathlib import Path
 
-from proxy_relay.config import MonitorConfig
+from proxy_relay.config import MonitorConfig, load_config, resolve_blocked_domains
 from proxy_relay.handler import handle_connection
 from proxy_relay.logger import get_logger
 from proxy_relay.monitor import ConnectionMonitor, MonitorStats
@@ -44,6 +45,11 @@ class ProxyServer:
         monitor_config: Optional monitor configuration. When provided and
             enabled, a ConnectionMonitor is created to track connection
             quality and trigger automatic upstream rotation.
+        profile_name: proxy-st profile name used for PID/status file scoping.
+        blocked_domains: Optional set of domain names to block at the handler
+            level.  Any CONNECT or HTTP request whose target host matches or
+            is a subdomain of an entry is rejected with ``403 Forbidden``.
+            ``None`` disables blocking (default).
     """
 
     def __init__(
@@ -53,12 +59,16 @@ class ProxyServer:
         upstream_manager: UpstreamManager | None = None,
         monitor_config: MonitorConfig | None = None,
         profile_name: str = "browse",
+        blocked_domains: frozenset[str] | None = None,
+        config_path: Path | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._upstream_manager = upstream_manager
         self._monitor_config = monitor_config
         self._profile_name = profile_name
+        self._blocked_domains = blocked_domains
+        self._config_path = config_path
         self._pid_path = pid_path_for(profile_name)
         self._status_path = status_path_for(profile_name)
         self._server: asyncio.Server | None = None
@@ -137,6 +147,9 @@ class ProxyServer:
         # Install SIGUSR1 handler for manual rotation
         loop.add_signal_handler(signal.SIGUSR1, self._signal_rotate)
 
+        # Install SIGUSR2 handler for runtime blocked-domain config reload
+        loop.add_signal_handler(signal.SIGUSR2, self._signal_block_update)
+
         # Ignore SIGPIPE so broken-pipe writes raise BrokenPipeError instead
         # of terminating the process (F-RL11).
         if hasattr(signal, "SIGPIPE"):
@@ -202,6 +215,69 @@ class ProxyServer:
         """Signal handler (SIGUSR1) that triggers upstream rotation."""
         log.info("Rotation signal (SIGUSR1) received")
         asyncio.get_running_loop().create_task(self._do_rotate())
+
+    def _update_blocked_domains(self, new_domains: frozenset[str] | None) -> None:
+        """Atomically replace blocked domains.
+
+        Assignment is atomic in CPython (GIL protects single-bytecode stores).
+        No lock needed — frozenset is immutable.
+
+        Args:
+            new_domains: New set of blocked domains, or None for no blocking.
+        """
+        old = self._blocked_domains
+        self._blocked_domains = new_domains
+        log.info(
+            "Blocked domains updated: %s -> %s",
+            sorted(old) if old else "none",
+            sorted(new_domains) if new_domains else "none",
+        )
+
+    def _signal_block_update(self) -> None:
+        """SIGUSR2 handler — schedules config reload via the event loop.
+
+        Installed as a signal handler in start(). Schedules
+        _reload_blocked_from_config() to run in the event loop thread so
+        that the config re-read happens safely without thread-safety concerns.
+        """
+        log.info("Config reload signal (SIGUSR2) received")
+        asyncio.get_running_loop().call_soon_threadsafe(self._reload_blocked_from_config)
+
+    def _reload_blocked_from_config(self) -> None:
+        """Re-read config.toml, resolve profile's blocked_domains, swap in-memory.
+
+        On parse error, logs a warning and keeps current state — no crash.
+        Runs in the event loop thread (scheduled by _signal_block_update via
+        call_soon_threadsafe).
+        """
+        config_path = self._config_path
+        if config_path is None:
+            from proxy_relay.config import CONFIG_PATH
+            config_path = CONFIG_PATH
+
+        try:
+            config = load_config(config_path)
+        except Exception as exc:
+            log.warning(
+                "SIGUSR2: failed to reload config from %s — keeping current blocked domains: %s",
+                config_path,
+                exc,
+            )
+            return
+
+        profile = config.profiles.get(
+            self._profile_name,
+            config.profiles.get("default"),
+        )
+        if profile is None:
+            log.warning(
+                "SIGUSR2: profile %r not found in reloaded config — keeping current blocked domains",
+                self._profile_name,
+            )
+            return
+
+        new_domains = resolve_blocked_domains(profile)
+        self._update_blocked_domains(new_domains)
 
     async def _do_rotate(self) -> None:
         """Rotate the upstream SOCKS5 session and update the cached upstream.
@@ -476,6 +552,7 @@ class ProxyServer:
                 reader, writer, upstream_snapshot,
                 monitor=self._monitor,
                 health_callback=self.health_check,
+                blocked_domains=self._blocked_domains,
             )
         finally:
             self._active_connections -= 1

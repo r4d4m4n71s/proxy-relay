@@ -257,11 +257,11 @@ class TestWarmupMeta:
 class TestIsTidalUrl:
     """is_tidal_url() URL classification."""
 
-    def test_none_returns_true(self):
+    def test_none_returns_false(self):
         from proxy_relay.profile_rules import is_tidal_url
 
-        # None means "no navigation yet" — treated as TIDAL context
-        assert is_tidal_url(None) is True
+        # None means "no --start-url" — skip TIDAL-specific validation
+        assert is_tidal_url(None) is False
 
     def test_tidal_com_returns_true(self):
         from proxy_relay.profile_rules import is_tidal_url
@@ -825,3 +825,33 @@ class TestNoImmutableInProfileRules:
         conn = _open_cookies_db(tmp_path)
         assert conn is not None
         conn.close()
+
+
+# ===========================================================================
+# TestTidalDomainsPublic: TIDAL_DOMAINS constant is public and well-formed
+# ===========================================================================
+
+
+class TestTidalDomainsPublic:
+    """TIDAL_DOMAINS is exported as a public name (renamed from _TIDAL_DOMAINS)
+    and contains the expected values."""
+
+    def test_tidal_domains_is_importable(self):
+        """``from proxy_relay.profile_rules import TIDAL_DOMAINS`` succeeds."""
+        from proxy_relay.profile_rules import TIDAL_DOMAINS  # noqa: F401
+
+    def test_tidal_domains_is_frozenset(self):
+        """TIDAL_DOMAINS is a frozenset (immutable, hashable)."""
+        from proxy_relay.profile_rules import TIDAL_DOMAINS
+
+        assert isinstance(TIDAL_DOMAINS, frozenset), (
+            f"Expected frozenset, got {type(TIDAL_DOMAINS).__name__}"
+        )
+
+    def test_tidal_domains_contains_tidal_com(self):
+        """TIDAL_DOMAINS contains the root domain 'tidal.com'."""
+        from proxy_relay.profile_rules import TIDAL_DOMAINS
+
+        assert "tidal.com" in TIDAL_DOMAINS, (
+            f"'tidal.com' not found in TIDAL_DOMAINS: {TIDAL_DOMAINS!r}"
+        )

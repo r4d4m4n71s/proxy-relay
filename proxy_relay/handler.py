@@ -10,6 +10,7 @@ import asyncio
 import ipaddress
 import time
 from collections.abc import Awaitable, Callable
+from urllib.parse import urlparse
 
 from proxy_relay.exceptions import TunnelError
 from proxy_relay.forwarder import forward_http_request
@@ -52,12 +53,31 @@ def _is_loopback(peer_str: str) -> bool:
         return False
 
 
+def _is_domain_blocked(host: str, blocked_domains: frozenset[str]) -> bool:
+    """Return True if host matches or is a subdomain of any blocked domain.
+
+    Args:
+        host: Hostname to check (without port, without IPv6 brackets).
+        blocked_domains: Set of domain names to block (e.g. ``{"tidal.com"}``).
+
+    Returns:
+        True if *host* is an exact match or a subdomain of any entry in
+        *blocked_domains*.
+    """
+    host_lower = host.lower().strip("[]")  # handle IPv6 brackets
+    for domain in blocked_domains:
+        if host_lower == domain or host_lower.endswith("." + domain):
+            return True
+    return False
+
+
 async def handle_connection(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
     upstream: UpstreamInfo,
     monitor: ConnectionMonitor | None = None,
     health_callback: Callable[[], Awaitable[tuple[bool, str]]] | None = None,
+    blocked_domains: frozenset[str] | None = None,
 ) -> None:
     """Handle a single client connection to the proxy.
 
@@ -72,6 +92,9 @@ async def handle_connection(
         health_callback: Optional async callback for the internal health
             endpoint.  When provided and the request is ``GET /__health``,
             the callback is invoked instead of forwarding through SOCKS5.
+        blocked_domains: Optional set of domain names to block.  When set,
+            any CONNECT or HTTP request whose target host matches or is a
+            subdomain of an entry is rejected with ``403 Forbidden``.
     """
     peer = client_writer.get_extra_info("peername")
     peer_str = f"{peer[0]}:{peer[1]}" if peer else "unknown"
@@ -95,7 +118,25 @@ async def handle_connection(
                 log.warning("Health endpoint access denied for non-loopback peer %s", peer_str)
                 return
             await _handle_health(client_writer, health_callback)
-        elif method == "CONNECT":
+            return
+
+        # Domain blocking check — runs after health endpoint, before dispatch.
+        if blocked_domains is not None:
+            if method == "CONNECT":
+                check_host = target.rsplit(":", 1)[0].strip("[]")
+            else:
+                check_host = urlparse(target).hostname or ""
+
+            if _is_domain_blocked(check_host, blocked_domains):
+                log.warning(
+                    "Blocked request to %s — domain not allowed in this session "
+                    "(use --start-url to enable TIDAL browsing)",
+                    check_host,
+                )
+                await send_error(client_writer, 403, "Forbidden")
+                return
+
+        if method == "CONNECT":
             await _handle_connect(
                 target,
                 upstream,

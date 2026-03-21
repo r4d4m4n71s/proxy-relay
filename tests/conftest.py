@@ -15,11 +15,17 @@ def tmp_config_dir(tmp_path):
 
 @pytest.fixture
 def minimal_toml(tmp_path):
-    """Create a minimal valid TOML config file."""
+    """Create a minimal valid TOML config file (per-profile schema).
+
+    Contains [profiles.default] as required by the per-profile refactor.
+    Used by test_config.py to test RelayConfig.load() with minimal input.
+    """
     path = tmp_path / "config.toml"
     path.write_text(
         '[server]\n'
         'host = "127.0.0.1"\n'
+        '\n'
+        '[profiles.default]\n'
         'port = 8080\n'
     )
     return path

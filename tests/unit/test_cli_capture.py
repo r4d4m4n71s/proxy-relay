@@ -14,37 +14,37 @@ class TestBrowseParserCaptureFlags:
         return build_parser()
 
     def test_browse_parser_has_capture_flag(self, parser):
-        """parse_args(['browse', '--capture']) must succeed."""
-        args = parser.parse_args(["browse", "--capture"])
+        """parse_args(['browse', '--profile', 'miami', '--capture']) must succeed."""
+        args = parser.parse_args(["browse", "--profile", "miami", "--capture"])
         assert args.capture is True
 
     def test_browse_parser_capture_flag_default_false(self, parser):
         """Without --capture, the flag defaults to False."""
-        args = parser.parse_args(["browse"])
+        args = parser.parse_args(["browse", "--profile", "miami"])
         assert args.capture is False
 
     def test_browse_parser_has_capture_domains_flag(self, parser):
         """--capture-domains accepts a comma-separated domain string."""
         args = parser.parse_args([
-            "browse", "--capture", "--capture-domains", "tidal.com,qobuz.com"
+            "browse", "--profile", "miami", "--capture", "--capture-domains", "tidal.com,qobuz.com"
         ])
         assert args.capture_domains == "tidal.com,qobuz.com"
 
     def test_capture_domains_parsed_as_string(self, parser):
         """--capture-domains stores a raw string (splitting is done downstream)."""
         args = parser.parse_args([
-            "browse", "--capture", "--capture-domains", "tidal.com"
+            "browse", "--profile", "miami", "--capture", "--capture-domains", "tidal.com"
         ])
         assert isinstance(args.capture_domains, str)
         assert args.capture_domains == "tidal.com"
 
     def test_capture_domains_default_is_none_or_empty(self, parser):
         """Without --capture-domains, the value is None or empty string."""
-        args = parser.parse_args(["browse"])
+        args = parser.parse_args(["browse", "--profile", "miami"])
         assert args.capture_domains is None or args.capture_domains == ""
 
     def test_capture_flag_does_not_break_other_browse_args(self, parser):
-        """--capture can coexist with other browse flags like --profile."""
+        """--capture can coexist with other browse flags like --profile and --no-rotate."""
         args = parser.parse_args([
             "browse", "--capture", "--profile", "us-browse", "--no-rotate"
         ])
@@ -54,5 +54,20 @@ class TestBrowseParserCaptureFlags:
 
     def test_capture_domains_without_capture_flag(self, parser):
         """--capture-domains can be parsed even without --capture (validation is downstream)."""
-        args = parser.parse_args(["browse", "--capture-domains", "tidal.com"])
+        args = parser.parse_args(["browse", "--profile", "miami", "--capture-domains", "tidal.com"])
+        assert args.capture_domains == "tidal.com"
+
+    def test_browse_requires_profile_with_capture(self, parser):
+        """browse --capture still requires --profile."""
+        with pytest.raises(SystemExit):
+            parser.parse_args(["browse", "--capture"])
+
+    def test_profile_stored_correctly_alongside_capture(self, parser):
+        """--profile value is available alongside --capture flags."""
+        args = parser.parse_args([
+            "browse", "--profile", "medellin",
+            "--capture", "--capture-domains", "tidal.com"
+        ])
+        assert args.profile == "medellin"
+        assert args.capture is True
         assert args.capture_domains == "tidal.com"

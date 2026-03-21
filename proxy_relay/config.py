@@ -17,45 +17,172 @@ CONFIG_PATH: Path = CONFIG_DIR / "config.toml"
 _VALID_LOG_LEVELS: frozenset[str] = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
 
 _DEFAULT_CONFIG: str = """\
+# =============================================================================
 # proxy-relay configuration
-# Local HTTP CONNECT proxy forwarding traffic through upstream SOCKS5 via proxy-st.
+# =============================================================================
+# Local HTTP CONNECT proxy that forwards traffic through upstream SOCKS5
+# proxies provided by proxy-st.
+#
+# Usage:
+#   proxy-relay start --profile <name>     Start the proxy server
+#   proxy-relay browse --profile <name>    Launch a browser through the proxy
+#   proxy-relay status                     Show all running instances
+#   proxy-relay stop --profile <name>      Stop a running instance
+#   proxy-relay block --profile <name> --domains <d1,d2,...>    Block domains
+#   proxy-relay unblock --profile <name> --domains <d1,d2,...>  Unblock domains
+#
+# --profile is REQUIRED on all commands except status.
+# Profile names must match proxy-st profile names (same identity = same name).
+# =============================================================================
 
-# log_level = "INFO"
+# Global log level. Applies to all commands.
+# Values: DEBUG, INFO, WARNING, ERROR
+log_level = "INFO"
 
-# proxy-st profile name to use for upstream SOCKS5 connections.
-default_proxy_profile = "browse"
-
+# ---------------------------------------------------------------------------
+# [server] — Local proxy server bind settings
+# ---------------------------------------------------------------------------
+# The proxy listens on this address. All profiles share the same bind host.
+# Each profile gets its own port (configured in [profiles.<name>]).
+#
+# WARNING: binding to a non-loopback address exposes the proxy to the network.
 [server]
-host = "127.0.0.1"
+host = "127.0.0.1"                         # Bind address (loopback only)
+
+# ---------------------------------------------------------------------------
+# [monitor] — Connection quality monitoring
+# ---------------------------------------------------------------------------
+# Tracks tunnel success/failure rates in a rolling window. When errors exceed
+# the threshold, auto-rotates to a new upstream exit IP.
+[monitor]
+enabled = true                              # Enable/disable the monitor
+slow_threshold_ms = 2000.0                  # Log warning when tunnel > this (ms)
+error_threshold_count = 5                   # Errors in window before auto-rotate
+window_size = 100                           # Rolling window size (connections)
+
+# ---------------------------------------------------------------------------
+# [anti_leak] — IP and identity leak prevention
+# ---------------------------------------------------------------------------
+[anti_leak]
+warn_timezone_mismatch = true               # Warn if system TZ != proxy country
+
+# ---------------------------------------------------------------------------
+# [capture] — Traffic capture for debugging (optional)
+# ---------------------------------------------------------------------------
+# Requires: pip install proxy-relay[capture]
+# Captures HTTP traffic metadata for analysis. Not per-profile — applies globally.
+#
+# [capture]
+# auto_analyze = true                       # Auto-analyze captured traffic
+# auto_report = true                        # Auto-generate traffic report
+# domains = ["tidal.com", "qobuz.com"]      # Domains to capture
+# max_body_bytes = 65536                    # Max request/response body stored
+# cookie_poll_interval_s = 30.0            # Seconds between cookie snapshots
+# storage_poll_interval_s = 60.0           # Seconds between localStorage polls
+# report_dir = "~/.config/proxy-relay"     # Directory for capture reports
+
+# =============================================================================
+# [profiles] — Per-profile settings
+# =============================================================================
+# Each profile maps 1:1 to a proxy-st profile (same name = same proxy identity).
+#
+# [profiles.default] is REQUIRED — it serves as the inheritance base.
+# Named profiles inherit ALL settings from default, then override specific ones.
+#
+# Inheritance rule:
+#   For each field in [profiles.<name>]:
+#     - If the field is PRESENT → use it (overrides default)
+#     - If the field is ABSENT  → inherit from [profiles.default]
+#
+# Example: [profiles.miami] with only start_url set inherits port, browser,
+# rotate_interval_min, and blocked_domains from [profiles.default].
+# =============================================================================
+
+[profiles.default]
+
+# Port to bind the proxy server on. Each profile should use a unique port
+# to allow multiple instances to run simultaneously.
+# Use port = 0 to let the OS assign a free port automatically.
 port = 8080
 
-[monitor]
-# enabled = true
-# slow_threshold_ms = 2000.0
-# error_threshold_count = 2
-# window_size = 100
+# Chromium-based browser binary name or absolute path.
+# Used by the 'browse' command to launch a browser through the proxy.
+# Examples: "chromium", "brave-browser", "/usr/bin/google-chrome-stable"
+# Empty string = auto-detect (searches PATH for known Chromium browsers).
+browser = ""
 
-[anti_leak]
-# warn_timezone_mismatch = true
+# Auto-rotate the upstream exit IP every N minutes during browse sessions.
+# Helps avoid long-lived sessions that might trigger detection.
+# Set to 0 to disable auto-rotation.
+rotate_interval_min = 30
 
-[browse]
-# rotate_interval_min = 30  # auto-rotate every N minutes (0 = disabled)
-# browser = ""  # Chromium binary name or path (auto-detect if empty)
+# URL to open automatically when 'browse' launches the browser.
+# If the URL is a TIDAL domain (tidal.com, listen.tidal.com, login.tidal.com),
+# TIDAL domains are automatically REMOVED from blocked_domains for that session,
+# and profile validation + DataDome warmup are triggered if needed.
+# Empty string = open the browser's default new-tab page.
+start_url = ""
 
-# [capture]
-# domains = ["tidal.com", "qobuz.com"]   # domains to capture traffic for
-# max_body_bytes = 65536                 # max response/request body bytes stored
-# cookie_poll_interval_s = 30.0         # seconds between cookie snapshot polls
-# storage_poll_interval_s = 60.0        # seconds between localStorage polls
+# Domains to block at the proxy level. Any CONNECT or HTTP request to these
+# domains (or their subdomains) is rejected with 403 Forbidden.
+#
+# Purpose: prevents accidental navigation to sensitive domains (e.g., TIDAL)
+# without proper session setup (DataDome cookie warmup, etc.).
+#
+# Default includes TIDAL domains to prevent IP poisoning.
+# Set to [] (empty list) to disable all blocking for this profile.
+#
+# Subdomain matching: "tidal.com" also blocks "login.tidal.com",
+# "listen.tidal.com", and any other *.tidal.com subdomain.
+blocked_domains = ["tidal.com", "listen.tidal.com", "login.tidal.com"]
+
+# ---------------------------------------------------------------------------
+# Named profiles — override specific fields, inherit the rest from default
+# ---------------------------------------------------------------------------
+
+# [profiles.miami]
+# port = 8081                               # Unique port for this profile
+# start_url = "https://example.com"         # Auto-navigate on browse
+
+# [profiles.medellin]
+# port = 8082
+# browser = "brave-browser"                 # Use Brave for this profile
+# rotate_interval_min = 15                  # Rotate more frequently
+# blocked_domains = []                      # No blocking (TIDAL access allowed)
+# start_url = "https://listen.tidal.com"    # Auto-navigate to TIDAL
 """
 
 
 @dataclass(frozen=True)
+class ProfileConfig:
+    """Per-profile configuration settings.
+
+    All fields are inheritable from [profiles.default].
+
+    Attributes:
+        port: Bind port for this profile's server instance.
+        browser: Chromium-based browser binary name or path (empty = auto-detect).
+        rotate_interval_min: IP rotation interval in minutes (0 = disabled).
+        start_url: URL to open on browse launch (empty = new-tab page).
+            If a TIDAL URL, TIDAL domains are auto-unblocked and warmup triggered.
+        blocked_domains: Domains to block at the proxy level.
+            Dataclass default (None) resolves to TIDAL_DOMAINS.
+            When parsed from TOML, the default template provides an explicit list.
+            Empty list = explicitly no blocking.
+    """
+
+    port: int = 8080
+    browser: str = ""
+    rotate_interval_min: int = 30
+    start_url: str = ""
+    blocked_domains: list[str] | None = None
+
+
+@dataclass(frozen=True)
 class ServerConfig:
-    """Local proxy server bind settings."""
+    """Local proxy server bind settings. Port moved to ProfileConfig."""
 
     host: str = "127.0.0.1"
-    port: int = 8080
 
 
 @dataclass(frozen=True)
@@ -64,7 +191,7 @@ class MonitorConfig:
 
     enabled: bool = True
     slow_threshold_ms: float = 2000.0
-    error_threshold_count: int = 2
+    error_threshold_count: int = 5
     window_size: int = 100
 
 
@@ -75,25 +202,16 @@ class AntiLeakConfig:
     warn_timezone_mismatch: bool = True
 
 
-@dataclass(frozen=True)
-class BrowseConfig:
-    """Browser launch and auto-rotation settings."""
-
-    rotate_interval_min: int = 30
-    browser: str = ""
-
-
 @dataclass
 class RelayConfig:
     """Root configuration for proxy-relay."""
 
     log_level: str = "INFO"
-    default_proxy_profile: str = "browse"
     server: ServerConfig = field(default_factory=ServerConfig)
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     anti_leak: AntiLeakConfig = field(default_factory=AntiLeakConfig)
-    browse: BrowseConfig = field(default_factory=BrowseConfig)
     capture: object | None = None  # CaptureConfig | None — typed as object to avoid import
+    profiles: dict[str, ProfileConfig] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path | None = None) -> RelayConfig:
@@ -165,6 +283,127 @@ def _create_default_config(path: Path) -> None:
         raise ConfigError(f"Cannot create default config at {path}: {exc}") from exc
 
 
+def _parse_profile(
+    data: dict,
+    name: str,
+    parent: ProfileConfig | None = None,
+) -> ProfileConfig:
+    """Parse a [profiles.<name>] section with inheritance.
+
+    For each field:
+      - If present in data → use it
+      - If absent and parent exists → inherit from parent
+      - If absent and no parent (default profile) → use dataclass default
+
+    Args:
+        data: The raw TOML dict for the profile section.
+        name: Profile name (for error messages).
+        parent: Parent ProfileConfig to inherit from. None for default profile.
+
+    Returns:
+        Populated ProfileConfig.
+
+    Raises:
+        ConfigError: If a field has an invalid value.
+    """
+    defaults = parent if parent is not None else ProfileConfig()
+
+    # port
+    if "port" in data:
+        port = data["port"]
+        if not isinstance(port, int) or port < 0 or port > 65535:
+            raise ConfigError(
+                f"profiles.{name}.port must be an integer 0-65535, got: {port!r}"
+            )
+    else:
+        port = defaults.port
+
+    # browser
+    if "browser" in data:
+        browser = str(data["browser"])
+    else:
+        browser = defaults.browser
+
+    # rotate_interval_min
+    if "rotate_interval_min" in data:
+        rotate_interval_min = data["rotate_interval_min"]
+        if not isinstance(rotate_interval_min, int) or rotate_interval_min < 0:
+            raise ConfigError(
+                f"profiles.{name}.rotate_interval_min must be a non-negative integer, "
+                f"got: {rotate_interval_min!r}"
+            )
+    else:
+        rotate_interval_min = defaults.rotate_interval_min
+
+    # start_url
+    if "start_url" in data:
+        start_url = str(data["start_url"])
+    else:
+        start_url = defaults.start_url
+
+    # blocked_domains — presence vs absence matters for inheritance
+    if "blocked_domains" in data:
+        raw_domains = data["blocked_domains"]
+        if not isinstance(raw_domains, list):
+            raise ConfigError(
+                f"profiles.{name}.blocked_domains must be a list, got: {type(raw_domains).__name__}"
+            )
+        # Filter empty strings
+        blocked_domains: list[str] | None = [
+            str(d) for d in raw_domains if str(d).strip()
+        ]
+    else:
+        # Absent → inherit from parent
+        blocked_domains = defaults.blocked_domains
+
+    return ProfileConfig(
+        port=port,
+        browser=browser,
+        rotate_interval_min=rotate_interval_min,
+        start_url=start_url,
+        blocked_domains=blocked_domains,
+    )
+
+
+def resolve_blocked_domains(
+    profile: ProfileConfig,
+    start_url: str = "",
+) -> frozenset[str] | None:
+    """Resolve effective blocked domains for a profile.
+
+    Args:
+        profile: Resolved ProfileConfig (inheritance already applied).
+        start_url: Effective start URL (from CLI or profile). When this is
+            a TIDAL URL, TIDAL domains are removed from the blocked set.
+
+    Returns:
+        frozenset of domains to block, or None for no blocking.
+        Default: TIDAL_DOMAINS if profile.blocked_domains is None.
+    """
+    from proxy_relay.profile_rules import TIDAL_DOMAINS, is_tidal_url
+
+    # Determine base set
+    if profile.blocked_domains is None:
+        # Dataclass default — resolve to TIDAL_DOMAINS
+        base: frozenset[str] = TIDAL_DOMAINS
+    elif not profile.blocked_domains:
+        # Explicitly empty list — no blocking
+        return None
+    else:
+        base = frozenset(profile.blocked_domains)
+
+    # If start_url targets TIDAL, auto-unblock TIDAL domains in-memory
+    if is_tidal_url(start_url):
+        effective = base - TIDAL_DOMAINS
+        if effective != base:
+            log.debug(
+                "TIDAL start_url detected — auto-unblocking TIDAL domains for this session"
+            )
+        return effective if effective else None
+
+    return base if base else None
+
+
 def _parse_config(data: dict) -> RelayConfig:
     """Parse raw TOML dict into a RelayConfig instance.
 
@@ -185,24 +424,16 @@ def _parse_config(data: dict) -> RelayConfig:
             f"{', '.join(sorted(_VALID_LOG_LEVELS))}"
         )
 
-    default_proxy_profile = str(data.get("default_proxy_profile", "browse"))
-    if not default_proxy_profile:
-        raise ConfigError("default_proxy_profile must not be empty")
-
     # [server]
     server_data = data.get("server", {})
     host = str(server_data.get("host", "127.0.0.1"))
-    port = server_data.get("port", 8080)
-    # Port 0 is valid: the OS assigns an ephemeral port (used by browse auto-start).
-    if not isinstance(port, int) or port < 0 or port > 65535:
-        raise ConfigError(f"server.port must be an integer 0-65535, got: {port!r}")
     if host not in ("127.0.0.1", "::1", "localhost"):
         log.warning(
             "server.host=%r binds to a non-loopback address — "
             "the proxy will be accessible from the network",
             host,
         )
-    server = ServerConfig(host=host, port=port)
+    server = ServerConfig(host=host)
 
     # [monitor]
     monitor_data = data.get("monitor", {})
@@ -216,7 +447,7 @@ def _parse_config(data: dict) -> RelayConfig:
         raise ConfigError(
             f"monitor.slow_threshold_ms must be a positive number, got: {slow_threshold!r}"
         )
-    error_count = monitor_data.get("error_threshold_count", 2)
+    error_count = monitor_data.get("error_threshold_count", 5)
     if not isinstance(error_count, int) or error_count < 0:
         raise ConfigError(
             f"monitor.error_threshold_count must be a non-negative integer, got: {error_count!r}"
@@ -241,16 +472,6 @@ def _parse_config(data: dict) -> RelayConfig:
             f"anti_leak.warn_timezone_mismatch must be a boolean, got: {type(warn_tz).__name__}"
         )
     anti_leak = AntiLeakConfig(warn_timezone_mismatch=warn_tz)
-
-    # [browse]
-    browse_data = data.get("browse", {})
-    rotate_interval = browse_data.get("rotate_interval_min", 30)
-    if not isinstance(rotate_interval, int) or rotate_interval < 0:
-        raise ConfigError(
-            f"browse.rotate_interval_min must be a non-negative integer, got: {rotate_interval!r}"
-        )
-    browser = str(browse_data.get("browser", ""))
-    browse_cfg = BrowseConfig(rotate_interval_min=rotate_interval, browser=browser)
 
     # [capture] — optional; lazy import avoids circular dependency
     capture_data = data.get("capture")
@@ -283,21 +504,40 @@ def _parse_config(data: dict) -> RelayConfig:
             auto_report=bool(capture_data.get("auto_report", False)),
         )
 
-    config = RelayConfig(
+    # [profiles] — require [profiles.default]
+    profiles_data = data.get("profiles", {})
+    if not isinstance(profiles_data, dict):
+        raise ConfigError("[profiles] must be a TOML table")
+
+    if "default" not in profiles_data:
+        raise ConfigError(
+            "Missing [profiles.default] section — "
+            "regenerate config with: proxy-relay start --profile default"
+        )
+
+    # Parse default profile first (no parent)
+    default_profile = _parse_profile(profiles_data["default"], "default", parent=None)
+    profiles: dict[str, ProfileConfig] = {"default": default_profile}
+
+    # Parse named profiles with default as parent
+    for profile_name, profile_data in profiles_data.items():
+        if profile_name == "default":
+            continue
+        if not isinstance(profile_data, dict):
+            raise ConfigError(f"[profiles.{profile_name}] must be a TOML table")
+        profiles[profile_name] = _parse_profile(profile_data, profile_name, parent=default_profile)
+
+    log.debug(
+        "Config loaded: host=%s, profiles=%s",
+        host,
+        list(profiles.keys()),
+    )
+
+    return RelayConfig(
         log_level=log_level,
-        default_proxy_profile=default_proxy_profile,
         server=server,
         monitor=monitor,
         anti_leak=anti_leak,
-        browse=browse_cfg,
         capture=capture_cfg,
+        profiles=profiles,
     )
-
-    log.debug(
-        "Config loaded: profile=%s, bind=%s:%d",
-        default_proxy_profile,
-        host,
-        port,
-    )
-
-    return config

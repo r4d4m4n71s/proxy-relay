@@ -659,6 +659,7 @@ def auto_start_server(
     host: str = "127.0.0.1",
     config_path: Path | None = None,
     log_level: str = "INFO",
+    start_url: str = "",
 ) -> subprocess.Popen[bytes]:
     """Start a proxy-relay server subprocess for the given profile.
 
@@ -671,6 +672,9 @@ def auto_start_server(
         host: Local bind address.
         config_path: Optional path to config file.
         log_level: Log level for the server subprocess.
+        start_url: Optional URL passed as the hidden ``--start-url`` flag to
+            the server subprocess. When set to a TIDAL URL, the server
+            auto-unblocks TIDAL domains in-memory for that session.
 
     Returns:
         The Popen handle for the server process.
@@ -688,6 +692,8 @@ def auto_start_server(
     ]
     if config_path is not None:
         cmd.extend(["--config", str(config_path)])
+    if start_url:
+        cmd.extend(["--start-url", start_url])
 
     # Remove stale status file so wait_for_server_ready doesn't read
     # leftover data from a previous run.

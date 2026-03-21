@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+_PROFILES_SECTION = '\n[profiles.default]\nport = 8080\n'
+
 
 class TestConfigCaptureSection:
     """Verify RelayConfig correctly parses (or omits) the [capture] section."""
@@ -17,7 +19,7 @@ class TestConfigCaptureSection:
         path.write_text(
             '[server]\n'
             'host = "127.0.0.1"\n'
-            'port = 8080\n'
+            + _PROFILES_SECTION
         )
         cfg = RelayConfig.load(path)
         assert cfg.capture is None
@@ -31,10 +33,10 @@ class TestConfigCaptureSection:
         path.write_text(
             '[server]\n'
             'host = "127.0.0.1"\n'
-            'port = 8080\n'
             '\n'
             '[capture]\n'
             'max_body_bytes = 32768\n'
+            + _PROFILES_SECTION
         )
         cfg = RelayConfig.load(path)
         assert cfg.capture is not None
@@ -48,6 +50,7 @@ class TestConfigCaptureSection:
         path.write_text(
             '[capture]\n'
             '# no domains key\n'
+            + _PROFILES_SECTION
         )
         cfg = RelayConfig.load(path)
         assert cfg.capture is not None
@@ -62,6 +65,7 @@ class TestConfigCaptureSection:
         path.write_text(
             '[capture]\n'
             'domains = ["tidal.com", "login.tidal.com"]\n'
+            + _PROFILES_SECTION
         )
         cfg = RelayConfig.load(path)
         assert cfg.capture is not None
@@ -79,6 +83,7 @@ class TestConfigCaptureSection:
         path.write_text(
             '[capture]\n'
             'max_body_bytes = 32768\n'
+            + _PROFILES_SECTION
         )
         cfg = RelayConfig.load(path)
         assert cfg.capture is not None
@@ -93,6 +98,7 @@ class TestConfigCaptureSection:
             '[capture]\n'
             'cookie_poll_interval_s = 15.0\n'
             'storage_poll_interval_s = 45.0\n'
+            + _PROFILES_SECTION
         )
         cfg = RelayConfig.load(path)
         assert cfg.capture is not None
@@ -108,6 +114,7 @@ class TestConfigCaptureSection:
         path.write_text(
             f'[capture]\n'
             f'db_path = "{db_path}"\n'
+            + _PROFILES_SECTION
         )
         cfg = RelayConfig.load(path)
         assert cfg.capture is not None
@@ -117,7 +124,7 @@ class TestConfigCaptureSection:
         """_parse_config({}) must produce capture=None, not an error."""
         from proxy_relay.config import _parse_config
 
-        cfg = _parse_config({})
+        cfg = _parse_config({"profiles": {"default": {"port": 8080}}})
         assert cfg.capture is None
 
     def test_config_parse_config_dict_with_empty_capture_section(self):
@@ -125,6 +132,6 @@ class TestConfigCaptureSection:
         from proxy_relay.capture.models import CaptureConfig
         from proxy_relay.config import _parse_config
 
-        cfg = _parse_config({"capture": {}})
+        cfg = _parse_config({"capture": {}, "profiles": {"default": {"port": 8080}}})
         assert cfg.capture is not None
         assert isinstance(cfg.capture, CaptureConfig)

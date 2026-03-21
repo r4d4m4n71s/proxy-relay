@@ -336,3 +336,267 @@ class TestReadChunkedBodyTrailers:
 
         body = await _read_chunked_body(reader, raw, 1024)
         assert body == b"abc"
+
+
+# ---------------------------------------------------------------------------
+# TestDomainBlocking: CONNECT and HTTP requests blocked for TIDAL domains
+# ---------------------------------------------------------------------------
+
+
+def _make_connect_request(host: str, port: int = 443) -> bytes:
+    """Build a minimal CONNECT request bytes for the given host:port."""
+    target = f"{host}:{port}"
+    return (
+        f"CONNECT {target} HTTP/1.1\r\n"
+        f"Host: {target}\r\n"
+        f"\r\n"
+    ).encode()
+
+
+def _make_get_request(url: str) -> bytes:
+    """Build a minimal GET request bytes for the given absolute URL."""
+    return (
+        f"GET {url} HTTP/1.1\r\n"
+        f"Host: {url.split('/')[2]}\r\n"
+        f"\r\n"
+    ).encode()
+
+
+def _make_writer() -> AsyncMock:
+    """Build a minimal mock StreamWriter."""
+    writer = AsyncMock(spec=asyncio.StreamWriter)
+    writer.write = MagicMock()
+    writer.drain = AsyncMock()
+    writer.close = MagicMock()
+    writer.wait_closed = AsyncMock()
+    writer.get_extra_info = MagicMock(return_value=("127.0.0.1", 9999))
+    return writer
+
+
+class TestDomainBlocking:
+    """CONNECT and HTTP requests are blocked with 403 when the target domain
+    is in the blocked_domains set passed to handle_connection."""
+
+    # ------------------------------------------------------------------
+    # CONNECT blocking
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_connect_blocked_domain_returns_403(self):
+        """CONNECT to tidal.com:443 with tidal.com blocked returns 403 and
+        does NOT open a tunnel."""
+        from proxy_relay.handler import handle_connection
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        reader.read = AsyncMock(return_value=_make_connect_request("tidal.com", 443))
+        writer = _make_writer()
+        upstream = _make_upstream()
+
+        with patch("proxy_relay.handler.open_tunnel", new_callable=AsyncMock) as mock_tunnel, \
+             patch("proxy_relay.handler.relay_data", new_callable=AsyncMock):
+            await handle_connection(
+                reader, writer, upstream,
+                blocked_domains=frozenset({"tidal.com"}),
+            )
+
+            # Tunnel must NOT have been opened
+            mock_tunnel.assert_not_called()
+
+        # Response written to client must be 403
+        written = b"".join(
+            call.args[0] for call in writer.write.call_args_list
+            if call.args
+        )
+        assert b"403" in written, f"Expected 403 in response, got: {written!r}"
+
+    @pytest.mark.asyncio
+    async def test_connect_blocked_subdomain_returns_403(self):
+        """CONNECT to login.tidal.com:443 with tidal.com blocked returns 403
+        (subdomain match) and does NOT open a tunnel."""
+        from proxy_relay.handler import handle_connection
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        reader.read = AsyncMock(return_value=_make_connect_request("login.tidal.com", 443))
+        writer = _make_writer()
+        upstream = _make_upstream()
+
+        with patch("proxy_relay.handler.open_tunnel", new_callable=AsyncMock) as mock_tunnel, \
+             patch("proxy_relay.handler.relay_data", new_callable=AsyncMock):
+            await handle_connection(
+                reader, writer, upstream,
+                blocked_domains=frozenset({"tidal.com"}),
+            )
+
+            mock_tunnel.assert_not_called()
+
+        written = b"".join(
+            call.args[0] for call in writer.write.call_args_list
+            if call.args
+        )
+        assert b"403" in written, f"Expected 403 in response, got: {written!r}"
+
+    @pytest.mark.asyncio
+    async def test_connect_non_blocked_domain_passes_through(self):
+        """CONNECT to example.com:443 with only tidal.com blocked dispatches
+        normally — the tunnel is opened."""
+        from proxy_relay.handler import handle_connection
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        reader.read = AsyncMock(return_value=_make_connect_request("example.com", 443))
+        writer = _make_writer()
+        upstream = _make_upstream()
+        tunnel_result = _make_tunnel_result()
+
+        with patch("proxy_relay.handler.open_tunnel", new_callable=AsyncMock) as mock_tunnel, \
+             patch("proxy_relay.handler.relay_data", new_callable=AsyncMock):
+            mock_tunnel.return_value = tunnel_result
+            await handle_connection(
+                reader, writer, upstream,
+                blocked_domains=frozenset({"tidal.com"}),
+            )
+
+            mock_tunnel.assert_called_once()
+            call_args = mock_tunnel.call_args
+            assert call_args[0][0] == "example.com"
+
+    @pytest.mark.asyncio
+    async def test_blocked_domains_none_no_blocking(self):
+        """CONNECT to tidal.com:443 with blocked_domains=None (default)
+        dispatches normally — backward compatibility preserved."""
+        from proxy_relay.handler import handle_connection
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        reader.read = AsyncMock(return_value=_make_connect_request("tidal.com", 443))
+        writer = _make_writer()
+        upstream = _make_upstream()
+        tunnel_result = _make_tunnel_result()
+
+        with patch("proxy_relay.handler.open_tunnel", new_callable=AsyncMock) as mock_tunnel, \
+             patch("proxy_relay.handler.relay_data", new_callable=AsyncMock):
+            mock_tunnel.return_value = tunnel_result
+            # No blocked_domains argument — uses the default (None)
+            await handle_connection(reader, writer, upstream)
+
+            mock_tunnel.assert_called_once()
+            call_args = mock_tunnel.call_args
+            assert call_args[0][0] == "tidal.com"
+
+    @pytest.mark.asyncio
+    async def test_partial_domain_not_blocked(self):
+        """CONNECT to nottidal.com:443 with tidal.com blocked is NOT blocked
+        — partial suffix match must not trigger blocking."""
+        from proxy_relay.handler import handle_connection
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        reader.read = AsyncMock(return_value=_make_connect_request("nottidal.com", 443))
+        writer = _make_writer()
+        upstream = _make_upstream()
+        tunnel_result = _make_tunnel_result()
+
+        with patch("proxy_relay.handler.open_tunnel", new_callable=AsyncMock) as mock_tunnel, \
+             patch("proxy_relay.handler.relay_data", new_callable=AsyncMock):
+            mock_tunnel.return_value = tunnel_result
+            await handle_connection(
+                reader, writer, upstream,
+                blocked_domains=frozenset({"tidal.com"}),
+            )
+
+            mock_tunnel.assert_called_once()
+            call_args = mock_tunnel.call_args
+            assert call_args[0][0] == "nottidal.com"
+
+    # ------------------------------------------------------------------
+    # Plain HTTP blocking
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_http_blocked_domain_returns_403(self):
+        """GET http://tidal.com/path with tidal.com blocked returns 403
+        and does NOT forward the request."""
+        from proxy_relay.handler import handle_connection
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        reader.read = AsyncMock(return_value=_make_get_request("http://tidal.com/path"))
+        writer = _make_writer()
+        upstream = _make_upstream()
+
+        with patch("proxy_relay.handler.forward_http_request", new_callable=AsyncMock) as mock_fwd:
+            await handle_connection(
+                reader, writer, upstream,
+                blocked_domains=frozenset({"tidal.com"}),
+            )
+
+            mock_fwd.assert_not_called()
+
+        written = b"".join(
+            call.args[0] for call in writer.write.call_args_list
+            if call.args
+        )
+        assert b"403" in written, f"Expected 403 in response, got: {written!r}"
+
+    @pytest.mark.asyncio
+    async def test_http_blocked_subdomain_returns_403(self):
+        """GET http://listen.tidal.com/ with tidal.com blocked returns 403
+        and does NOT forward the request."""
+        from proxy_relay.handler import handle_connection
+
+        reader = AsyncMock(spec=asyncio.StreamReader)
+        reader.read = AsyncMock(
+            return_value=_make_get_request("http://listen.tidal.com/")
+        )
+        writer = _make_writer()
+        upstream = _make_upstream()
+
+        with patch("proxy_relay.handler.forward_http_request", new_callable=AsyncMock) as mock_fwd:
+            await handle_connection(
+                reader, writer, upstream,
+                blocked_domains=frozenset({"tidal.com"}),
+            )
+
+            mock_fwd.assert_not_called()
+
+        written = b"".join(
+            call.args[0] for call in writer.write.call_args_list
+            if call.args
+        )
+        assert b"403" in written, f"Expected 403 in response, got: {written!r}"
+
+    # ------------------------------------------------------------------
+    # _is_domain_blocked helper — direct unit tests
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "host, blocked, expected",
+        [
+            # Exact match
+            ("tidal.com", {"tidal.com"}, True),
+            # Subdomain match (left-anchored dot)
+            ("login.tidal.com", {"tidal.com"}, True),
+            # Unrelated domain — not blocked
+            ("example.com", {"tidal.com"}, False),
+            # Partial suffix — must NOT match
+            ("nottidal.com", {"tidal.com"}, False),
+            # Trailing subdomain injection attempt — must NOT match
+            ("tidal.com.evil.com", {"tidal.com"}, False),
+            # Case insensitivity — upper-case host against lower-case set
+            ("TIDAL.COM", {"tidal.com"}, True),
+        ],
+        ids=[
+            "exact-match",
+            "subdomain-match",
+            "unrelated-domain",
+            "partial-suffix-not-blocked",
+            "domain-injection-not-blocked",
+            "case-insensitive",
+        ],
+    )
+    def test_is_domain_blocked_helper(
+        self, host: str, blocked: set[str], expected: bool
+    ):
+        """_is_domain_blocked() correctly classifies each (host, blocked_set) pair."""
+        from proxy_relay.handler import _is_domain_blocked
+
+        result = _is_domain_blocked(host, frozenset(blocked))
+        assert result is expected, (
+            f"_is_domain_blocked({host!r}, {blocked!r}) returned {result}, expected {expected}"
+        )
