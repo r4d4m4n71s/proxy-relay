@@ -318,6 +318,60 @@ not included, add a comment documenting the audit result.
 
 ---
 
+## Backlog — New Items
+
+### K1 — Configurable browser feature flags
+
+| Field | Value |
+|-------|-------|
+| **Id** | K1 |
+| **Priority** | 3 |
+| **Severity** | medium |
+| **Effort** | M |
+| **Status** | backlog |
+
+**Problem:** Browser launch flags (Widevine, WebRTC policy, disable-infobars, etc.)
+are hardcoded in `browse.py`. Users cannot enable/disable features per profile without
+editing source code.
+
+**Proposed solution:** Add a `browser_flags` list to `ProfileConfig`:
+
+```toml
+[profiles.medellin]
+browser_flags = ["--enable-widevine", "--disable-background-networking"]
+```
+
+`browse.py` appends these flags to the Chromium launch command. Default profile
+provides sensible defaults (current hardcoded flags). Named profiles can override.
+
+**Affected files:** `proxy_relay/config.py` (ProfileConfig), `proxy_relay/browse.py`
+(flag construction), `tests/unit/test_browse.py`, `tests/unit/test_config.py`.
+
+---
+
+### K2 — Telemetry logging for migration not-found tracks
+
+| Field | Value |
+|-------|-------|
+| **Id** | K2 |
+| **Priority** | 4 |
+| **Severity** | low |
+| **Effort** | S |
+| **Status** | backlog |
+
+**Problem:** `playlist-migrate` and `library-migrate` print not-found tracks to
+the console but don't persist them. Once the terminal session is closed, the
+information is lost.
+
+**Proposed solution:** When telemetry is enabled, emit `migration.not_found` events
+with ISRC, artist, title, source provider, and timestamp. These can be queried later
+via `telemetry-monitor` dashboards or direct SQLite queries.
+
+**Affected files:** `tidal_dl/commands/library_migrate.py`, `tidal_dl/commands/playlist_migrate.py`,
+`tidal_dl/telemetry/schema.py` (new event route).
+
+---
+
 ## Column Definitions
 
 | Column | Values / Description |
