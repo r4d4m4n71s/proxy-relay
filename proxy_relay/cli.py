@@ -344,6 +344,17 @@ def _cmd_start(args: argparse.Namespace) -> int:
     return 0
 
 
+_PORT_FALLBACK_MAX_ATTEMPTS = 10
+
+
+def _find_port_owner(port: int) -> str | None:
+    """Return the profile name that is running on *port*, or None."""
+    for entry in scan_all_status():
+        if entry.get("running") and entry.get("port") == port:
+            return entry.get("profile")
+    return None
+
+
 async def _run(
     host: str,
     port: int,
@@ -352,22 +363,48 @@ async def _run(
 ) -> None:
     """Create and run the proxy server.
 
+    If the requested port is in use, automatically tries successive ports
+    (up to ``_PORT_FALLBACK_MAX_ATTEMPTS`` attempts) before giving up.
+    Port 0 (OS-assigned) is never retried — the OS always finds a free port.
+
     Args:
         host: Bind address.
         port: Bind port.
         profile_name: proxy-st profile name.
         monitor_config: Optional monitor configuration.
     """
-    manager = UpstreamManager(profile_name)
-    server = ProxyServer(
-        host=host,
-        port=port,
-        upstream_manager=manager,
-        monitor_config=monitor_config,
-        profile_name=profile_name,
-    )
+    import errno
 
-    await server.start()
+    manager = UpstreamManager(profile_name)
+    attempts = 1 if port == 0 else _PORT_FALLBACK_MAX_ATTEMPTS
+    current_port = port
+
+    for attempt in range(attempts):
+        server = ProxyServer(
+            host=host,
+            port=current_port,
+            upstream_manager=manager,
+            monitor_config=monitor_config,
+            profile_name=profile_name,
+        )
+        try:
+            await server.start()
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE or attempt == attempts - 1:
+                raise
+            # Identify which profile holds the port
+            owner = _find_port_owner(current_port)
+            if owner:
+                log.warning(
+                    "Port %d in use by profile %r, trying %d",
+                    current_port, owner, current_port + 1,
+                )
+            else:
+                log.warning("Port %d in use, trying %d", current_port, current_port + 1)
+            current_port += 1
+            continue
+        break
+
     await server.serve_forever()
 
 
