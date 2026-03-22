@@ -577,12 +577,15 @@ def _cmd_status(args: argparse.Namespace) -> int:
         port = status_data.get("port", "?")
         upstream_url = status_data.get("upstream_url", "?")
         country = status_data.get("country", "?")
+        exit_ip = status_data.get("exit_ip", "")
         active = status_data.get("active_connections", "?")
         total = status_data.get("total_connections", "?")
 
         print(f"  Listen:      {host}:{port}")
         print(f"  Upstream:    {upstream_url}")
         print(f"  Country:     {country}")
+        if exit_ip:
+            print(f"  Exit IP:     {exit_ip}")
         print(f"  Connections: {active} active / {total} total")
 
         monitor = status_data.get("monitor")
@@ -630,11 +633,13 @@ def _cmd_status_all(args: argparse.Namespace) -> int:
             host = s.get("host", "?")
             port = s.get("port", "?")
             country = s.get("country", "?")
+            exit_ip = s.get("exit_ip", "")
             active = s.get("active_connections", "?")
             total = s.get("total_connections", "?")
+            ip_part = f", ip={exit_ip}" if exit_ip else ""
             print(
                 f"  [{profile}] running (PID {pid}) — "
-                f"{host}:{port}, country={country}, conn={active}/{total}"
+                f"{host}:{port}, country={country}{ip_part}, conn={active}/{total}"
             )
         else:
             print(f"  [{profile}] not running (stale, cleaned up)")

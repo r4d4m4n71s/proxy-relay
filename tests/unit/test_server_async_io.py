@@ -132,6 +132,7 @@ class TestUpdateStatusFileAsync:
                 total_connections=0,
                 pid=12345,
                 started_at="2026-01-01T00:00:00+00:00",
+                exit_ip="",
             )
 
         mock_write.assert_called_once()

@@ -221,6 +221,7 @@ def write_status(
     profile: str = "",
     pid: int | None = None,
     started_at: str | None = None,
+    exit_ip: str = "",
     stats: dict[str, Any] | None = None,
     path: Path = STATUS_PATH,
 ) -> None:
@@ -239,6 +240,7 @@ def write_status(
         profile: proxy-st profile name the server is using.
         pid: Server process ID (default: current process).
         started_at: ISO timestamp of when the server started.
+        exit_ip: Public exit IP address from last health check.
         stats: Optional monitor stats dict to include.
         path: Destination path for the status file.
     """
@@ -247,6 +249,7 @@ def write_status(
         "port": port,
         "upstream_url": upstream_url,
         "country": country,
+        "exit_ip": exit_ip,
         "profile": profile,
         "pid": pid if pid is not None else os.getpid(),
         "started_at": started_at or "",

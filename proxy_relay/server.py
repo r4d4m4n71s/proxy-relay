@@ -79,6 +79,7 @@ class ProxyServer:
         self._shutdown_event: asyncio.Event = asyncio.Event()
         self._last_status_write: float = 0.0
         self._started_at: str = ""
+        self._exit_ip: str = ""
 
     async def start(self) -> None:
         """Start the proxy server.
@@ -291,6 +292,7 @@ class ProxyServer:
         try:
             new_upstream = await asyncio.to_thread(self._upstream_manager.rotate)
             self._upstream = new_upstream
+            self._exit_ip = ""  # cleared until next health check
             log.info(
                 "Upstream rotated: %s (country=%s)",
                 new_upstream.masked_url,
@@ -385,6 +387,8 @@ class ProxyServer:
                     continue
 
                 log.info("Health check OK (attempt %d/%d): exit IP %s", attempt, _HEALTH_MAX_RETRIES, body)
+                self._exit_ip = body
+                await self._update_status_file_async()
                 return True, body
 
             except Exception as exc:
@@ -449,6 +453,7 @@ class ProxyServer:
         total_connections: int,
         pid: int,
         started_at: str,
+        exit_ip: str,
     ) -> None:
         """Write current server status to the status JSON file.
 
@@ -464,6 +469,7 @@ class ProxyServer:
             profile=profile,
             pid=pid,
             started_at=started_at,
+            exit_ip=exit_ip,
             active_connections=active_connections,
             total_connections=total_connections,
             stats=stats_dict,
@@ -495,6 +501,7 @@ class ProxyServer:
         total_connections = self._total_connections
         pid = os.getpid()
         started_at = self._started_at
+        exit_ip = self._exit_ip
 
         await asyncio.to_thread(
             self._update_status_file,
@@ -506,6 +513,7 @@ class ProxyServer:
             total_connections,
             pid,
             started_at,
+            exit_ip,
         )
 
     @property
